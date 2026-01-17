@@ -58,7 +58,7 @@ export function buildOutputPaths(
   return {
     dir,
     pagePath: path.join(dir, "page.md"),
-    clutterPath: path.join(dir, "clutter.md"),
+    clutterPath: path.join(dir, ".clutter.md"),
     llmsPath: path.join(dir, ".llms.md"),
     llmsFullPath: path.join(dir, "llms-full.md"),
   };
