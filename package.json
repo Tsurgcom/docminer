@@ -34,14 +34,14 @@
     "ultracite": "7.0.11"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "@types/jsdom": "^27.0.0",
     "@types/turndown": "^5.0.6",
     "jsdom": "^27.4.0",
-    "playwright": "^1.42.1",
+    "playwright": "^1.57.0",
     "turndown": "^7.2.2"
   }
 }

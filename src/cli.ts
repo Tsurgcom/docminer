@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { parseArgs, printFindHelp, printHelp, printScrapeHelp } from "./args";
+import {
+  parseArgs,
+  printCrawlHelp,
+  printFindHelp,
+  printHelp,
+  printScrapeHelp,
+} from "./args";
 import { runFindCommand } from "./find";
 import { logger } from "./logger";
 import { runCliFlow } from "./scraper";
@@ -19,13 +25,27 @@ export async function main(): Promise<void> {
       return;
     }
 
-    // Scrape command
+    if (result.command === "crawl") {
+      if (result.showHelp) {
+        printCrawlHelp();
+        return;
+      }
+      logger.configure({
+        verbose: result.options.verbose,
+        showProgress: result.options.progress,
+      });
+      await runCliFlow(result.options);
+      return;
+    }
+
+    // Scrape command (url/urls)
     if (result.showHelp) {
-      // Show general help if no target was provided, scrape help if --help was explicit
-      const hasExplicitHelpFlag = argv.some(
-        (arg) => arg === "-h" || arg === "--help"
-      );
-      if (hasExplicitHelpFlag) {
+      // Show scrape help only if a target was provided, otherwise show general help
+      const hasTarget =
+        result.options.url ||
+        result.options.urlsFile ||
+        result.options.crawlStart;
+      if (hasTarget) {
         printScrapeHelp();
       } else {
         printHelp();

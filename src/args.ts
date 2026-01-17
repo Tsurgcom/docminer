@@ -12,6 +12,12 @@ export const DEFAULT_FIND_OPTIONS: FindOptions = {
   contextLines: 2,
 };
 
+export interface CrawlParseResult {
+  command: "crawl";
+  options: CliOptions;
+  showHelp: boolean;
+}
+
 export interface ScrapeParseResult {
   command: "scrape";
   options: CliOptions;
@@ -24,12 +30,15 @@ export interface FindParseResult {
   showHelp: boolean;
 }
 
-export type ParseResult = ScrapeParseResult | FindParseResult;
+export type ParseResult =
+  | CrawlParseResult
+  | ScrapeParseResult
+  | FindParseResult;
 
 export function printHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs [crawl] <url> [options]   Crawl and scrape documentation",
+    "  aidocs [crawl]                   Crawl and scrape documentation (default)",
     "  aidocs url <url> [options]       Scrape a single page",
     "  aidocs urls <file> [options]     Scrape pages from a file",
     "  aidocs find <query> [options]    Search scraped docs",
@@ -42,16 +51,16 @@ export function printHelp(): void {
     '  aidocs find "hooks"',
   ];
   console.info(lines.join("\n"));
+  console.info("\n--------------------------------\n");
+  printCrawlHelp();
 }
 
-export function printScrapeHelp(): void {
+export function printCrawlHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs [crawl] <url> [options]   (default)",
-    "  aidocs url <url> [options]       (single page)",
-    "  aidocs urls <file> [options]     (list of pages)",
+    "  aidocs [crawl] <url> [options]",
     "",
-    "Targets can also be provided with flags: --crawl, --url, --urls",
+    "Crawl a website starting from the given URL and scrape documentation.",
     "",
     "Options:",
     "  -d, --max-depth <n>      Max crawl depth from start (default: 3)",
@@ -72,8 +81,34 @@ export function printScrapeHelp(): void {
     "  -h, --help               Show this help",
     "",
     "Examples:",
-    "  aidocs https://example.com",
+    "  aidocs crawl https://example.com",
     "  aidocs crawl https://example.com/docs -d 5 -p 100",
+    "  aidocs crawl https://react.dev --no-render -c 8",
+  ];
+  console.info(lines.join("\n"));
+}
+
+export function printScrapeHelp(): void {
+  const lines = [
+    "Usage:",
+    "  aidocs url <url> [options]       (single page)",
+    "  aidocs urls <file> [options]     (list of pages)",
+    "",
+    "Options:",
+    "  -o, --output <path>      Output directory (default: .docs)",
+    "  -c, --concurrency <n>    Parallel workers (default: 4)",
+    "  -t, --timeout <ms>       Fetch timeout in ms (default: 15000)",
+    "      --retries <n>        Retry attempts (default: 2)",
+    "  -a, --user-agent <str>   Custom User-Agent header",
+    "",
+    "  -v, --[no-]verbose       Enable/disable verbose logging (default: off)",
+    "      --[no-]render        Enable/disable headless rendering for SPAs (default: on)",
+    "      --[no-]progress      Show/hide progress bar (default: on)",
+    "      --[no-]overwrite     Overwrite existing .llms.md files (default: off)",
+    "",
+    "  -h, --help               Show this help",
+    "",
+    "Examples:",
     "  aidocs url https://example.com/about -v",
     "  aidocs urls urls.txt -c 8 --no-render",
   ];
@@ -212,11 +247,204 @@ function parseFindArgs(args: string[]): FindParseResult {
   return { command: "find", options: opts, showHelp };
 }
 
+function parseCrawlArgs(args: string[]): CrawlParseResult {
+  const opts: CliOptions = { ...DEFAULT_OPTIONS };
+  let showHelp = false;
+
+  const iterator = args[Symbol.iterator]();
+  const positionalArgs: string[] = [];
+
+  const consumeNext = (valueFromEq: string | undefined): string | undefined => {
+    if (valueFromEq) {
+      return valueFromEq;
+    }
+    const next = iterator.next();
+    return next.done ? undefined : next.value;
+  };
+
+  const flagDefinitions: FlagDefinition[] = [
+    {
+      handler: (v) => {
+        opts.outDir = consumeNext(v) ?? DEFAULT_OPTIONS.outDir;
+      },
+      aliases: ["-o", "--output", "--out-dir", "--outdir"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.maxDepth = parsePositiveInt(raw, DEFAULT_OPTIONS.maxDepth);
+      },
+      aliases: ["-d", "--max-depth", "--maxdepth"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.maxPages = parsePositiveInt(raw, DEFAULT_OPTIONS.maxPages);
+      },
+      aliases: ["-p", "--max-pages", "--maxpages"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.delayMs = parsePositiveInt(raw, DEFAULT_OPTIONS.delayMs);
+      },
+      aliases: ["--delay"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.concurrency = parsePositiveInt(raw, DEFAULT_OPTIONS.concurrency);
+      },
+      aliases: ["-c", "--concurrency"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.timeoutMs = parsePositiveInt(raw, DEFAULT_OPTIONS.timeoutMs);
+      },
+      aliases: ["-t", "--timeout"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.retries = parsePositiveInt(raw, DEFAULT_OPTIONS.retries);
+      },
+      aliases: ["--retries"],
+    },
+    {
+      handler: (v) => {
+        opts.userAgent = consumeNext(v) ?? DEFAULT_OPTIONS.userAgent;
+      },
+      aliases: ["-a", "--user-agent", "--useragent"],
+    },
+    {
+      handler: () => {
+        opts.verbose = true;
+      },
+      aliases: ["-v", "--verbose"],
+    },
+    {
+      handler: () => {
+        opts.verbose = false;
+      },
+      aliases: ["--no-verbose"],
+    },
+    {
+      handler: () => {
+        opts.respectRobots = true;
+      },
+      aliases: ["-r", "--robots"],
+    },
+    {
+      handler: () => {
+        opts.respectRobots = false;
+      },
+      aliases: ["--no-robots"],
+    },
+    {
+      handler: () => {
+        opts.render = true;
+      },
+      aliases: ["--render"],
+    },
+    {
+      handler: () => {
+        opts.render = false;
+      },
+      aliases: ["--no-render"],
+    },
+    {
+      handler: () => {
+        opts.progress = true;
+      },
+      aliases: ["--progress"],
+    },
+    {
+      handler: () => {
+        opts.progress = false;
+      },
+      aliases: ["--no-progress"],
+    },
+    {
+      handler: () => {
+        opts.overwriteLlms = true;
+      },
+      aliases: ["--overwrite", "--overwrite-llms"],
+    },
+    {
+      handler: () => {
+        opts.overwriteLlms = false;
+      },
+      aliases: ["--no-overwrite", "--no-overwrite-llms"],
+    },
+    {
+      handler: () => {
+        showHelp = true;
+      },
+      aliases: ["-h", "--help"],
+    },
+  ];
+
+  const handlers = new Map<string, FlagHandler>();
+  for (const def of flagDefinitions) {
+    if (def.aliases) {
+      for (const alias of def.aliases) {
+        handlers.set(alias, def.handler);
+      }
+    }
+  }
+
+  for (const arg of iterator) {
+    const [flag, valueFromEq] = arg.split("=", 2);
+    const normalizedFlag = flag?.toLowerCase();
+    const handler = handlers.get(normalizedFlag ?? "");
+
+    if (handler) {
+      handler(valueFromEq);
+    } else {
+      positionalArgs.push(arg);
+    }
+  }
+
+  // First positional arg is the URL
+  const firstArg = positionalArgs[0];
+  if (firstArg) {
+    try {
+      new URL(firstArg);
+      opts.crawlStart = firstArg;
+    } catch {
+      throw new Error(
+        `"${firstArg}" is not a valid URL. Provide a URL (e.g. crawl https://example.com/docs)`
+      );
+    }
+  }
+
+  if (positionalArgs.length > 1) {
+    logger.warn(
+      `Ignoring extra positional arguments: ${positionalArgs.slice(1).join(", ")}`
+    );
+  }
+
+  // If no URL provided, show help
+  if (!(opts.crawlStart || showHelp)) {
+    showHelp = true;
+  }
+
+  return { command: "crawl", options: opts, showHelp };
+}
+
 export function parseArgs(args: string[]): ParseResult {
-  // Check if first argument is "find" command
   const firstArg = args[0];
-  if (firstArg?.toLowerCase() === "find") {
+  const normalizedFirst = firstArg?.toLowerCase();
+
+  // Check if first argument is "find" command
+  if (normalizedFirst === "find") {
     return parseFindArgs(args.slice(1));
+  }
+
+  // Check if first argument is "crawl" command
+  if (normalizedFirst === "crawl") {
+    return parseCrawlArgs(args.slice(1));
   }
 
   const opts: CliOptions = { ...DEFAULT_OPTIONS };
