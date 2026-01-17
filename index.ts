@@ -734,9 +734,128 @@ function extractLinks(
   return Array.from(new Set(results));
 }
 
+function normalizeHrefTarget(href: string, currentUrl: string): URL | null {
+  if (
+    !href ||
+    href.startsWith("#") ||
+    href.startsWith("mailto:") ||
+    href.startsWith("tel:")
+  ) {
+    return null;
+  }
+  try {
+    const target = new URL(href, currentUrl);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return null;
+    }
+    target.hash = "";
+    target.search = "";
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveLinkToRelative(
+  href: string,
+  currentUrl: string,
+  options: CliOptions,
+  knownUrls: Set<string>
+): Promise<string | null> {
+  const target = normalizeHrefTarget(href, currentUrl);
+  if (!target) {
+    return null;
+  }
+
+  const normalizedTarget = normalizeForQueue(target);
+  const { pagePath: targetPagePath } = buildOutputPaths(
+    target.toString(),
+    options.outDir
+  );
+
+  const targetExists =
+    knownUrls.has(normalizedTarget) || (await fileExists(targetPagePath));
+  if (!targetExists) {
+    return null;
+  }
+
+  const currentPageDir = path.dirname(
+    buildOutputPaths(currentUrl, options.outDir).pagePath
+  );
+  const relativePath = path.relative(currentPageDir, targetPagePath);
+  return relativePath.split(path.sep).join("/");
+}
+
+async function rewriteLinksInMarkdown(
+  markdown: string,
+  currentUrl: string,
+  options: CliOptions,
+  knownUrls: Set<string>
+): Promise<string> {
+  const linkRegex = /!?\[([^\]]+)\]\(([^)]+)\)/g;
+  let result = "";
+  let lastIndex = 0;
+
+  for (const match of markdown.matchAll(linkRegex)) {
+    const fullMatch = match[0];
+    const text = match[1] ?? "";
+    const hrefRaw = match[2] ?? "";
+    const index = match.index ?? 0;
+    result += markdown.slice(lastIndex, index);
+
+    // Skip images
+    if (fullMatch.startsWith("![")) {
+      result += fullMatch;
+      lastIndex = index + fullMatch.length;
+      continue;
+    }
+
+    const href = hrefRaw.trim();
+    const replacement = await resolveLinkToRelative(
+      href,
+      currentUrl,
+      options,
+      knownUrls
+    );
+
+    if (replacement) {
+      result += `[${text}](${replacement})`;
+    } else {
+      result += fullMatch;
+    }
+    lastIndex = index + fullMatch.length;
+  }
+
+  if (lastIndex < markdown.length) {
+    result += markdown.slice(lastIndex);
+  }
+
+  return result;
+}
+
+async function rewriteLinksInResult(
+  result: ScrapeResult,
+  currentUrl: string,
+  options: CliOptions,
+  knownUrls: Set<string>
+): Promise<ScrapeResult> {
+  const rewrite = async (content: string): Promise<string> =>
+    rewriteLinksInMarkdown(content, currentUrl, options, knownUrls);
+
+  return {
+    markdown: await rewrite(result.markdown),
+    clutterMarkdown: result.clutterMarkdown
+      ? await rewrite(result.clutterMarkdown)
+      : "",
+    llmsMarkdown: await rewrite(result.llmsMarkdown),
+    llmsFullMarkdown: await rewrite(result.llmsFullMarkdown),
+  };
+}
+
 async function scrapeOne(
   targetUrl: string,
-  options: CliOptions
+  options: CliOptions,
+  knownUrls: Set<string>
 ): Promise<void> {
   const html = await getPageHtml(targetUrl, {
     timeoutMs: options.timeoutMs,
@@ -746,7 +865,13 @@ async function scrapeOne(
     render: options.render,
   });
   const result = extractContent(html, targetUrl);
-  await writeOutputs(targetUrl, options, result);
+  const rewritten = await rewriteLinksInResult(
+    result,
+    targetUrl,
+    options,
+    knownUrls
+  );
+  await writeOutputs(targetUrl, options, rewritten);
   console.info(`Saved ${targetUrl}`);
 }
 
@@ -755,6 +880,9 @@ async function runWithConcurrency(
   options: CliOptions
 ): Promise<void> {
   const queue = [...urls];
+  const knownUrls = new Set(
+    queue.map((candidate) => normalizeForQueue(new URL(candidate)))
+  );
   const workers: Promise<void>[] = [];
 
   const worker = async (): Promise<void> => {
@@ -764,7 +892,7 @@ async function runWithConcurrency(
         return;
       }
       try {
-        await scrapeOne(nextUrl, options);
+        await scrapeOne(nextUrl, options, knownUrls);
       } catch (error) {
         console.error(`Failed ${nextUrl}: ${String(error)}`);
       }
@@ -823,6 +951,7 @@ async function crawlSite(startUrl: string, options: CliOptions): Promise<void> {
   const visited = new Set<string>();
   const failures: string[] = [];
   const saved: string[] = [];
+  const knownUrls = new Set<string>([normalizeForQueue(start)]);
 
   const processItem = async (item: CrawlQueueItem): Promise<string[]> => {
     const normalized = normalizeForQueue(new URL(item.url));
@@ -856,7 +985,13 @@ async function crawlSite(startUrl: string, options: CliOptions): Promise<void> {
     }
 
     const result = extractContent(html, currentUrl.toString());
-    await writeOutputs(currentUrl.toString(), options, result);
+    const rewritten = await rewriteLinksInResult(
+      result,
+      currentUrl.toString(),
+      options,
+      knownUrls
+    );
+    await writeOutputs(currentUrl.toString(), options, rewritten);
     saved.push(currentUrl.toString());
     console.info(`Saved ${currentUrl.toString()} (depth ${item.depth})`);
 
@@ -883,6 +1018,7 @@ async function crawlSite(startUrl: string, options: CliOptions): Promise<void> {
         if (visited.has(normalizedLink)) {
           continue;
         }
+        knownUrls.add(normalizedLink);
         queue.push({ url: link, depth: item.depth + 1 });
       }
     }
