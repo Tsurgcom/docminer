@@ -1,6 +1,7 @@
+import { JSDOM } from "jsdom";
 import { extractContent } from "./content";
 import { loadUrls, writeOutputs } from "./io";
-import { extractLinks, rewriteLinksInResult } from "./links";
+import { extractLinksFromDom, rewriteLinksInResult } from "./links";
 import { getPageHtml } from "./network";
 import { buildAllowAllPolicy, loadRobotsPolicy } from "./robots";
 import type { CliOptions, CrawlQueueItem } from "./types";
@@ -105,9 +106,11 @@ export async function crawlSite(
   };
 
   const queue: CrawlQueueItem[] = [{ url: start.toString(), depth: 0 }];
+  let queueIndex = 0;
   const visited = new Set<string>();
   const failures: string[] = [];
-  const saved: string[] = [];
+  let savedCount = 0;
+  let activeWorkers = 0;
   const knownUrls = new Set<string>([normalizeForQueue(start)]);
 
   const processItem = async (item: CrawlQueueItem): Promise<string[]> => {
@@ -141,7 +144,17 @@ export async function crawlSite(
       return [];
     }
 
-    const result = extractContent(html, currentUrl.toString());
+    const dom = new JSDOM(html, { url: currentUrl.toString() });
+    const document = dom.window.document;
+    const canGoDeeper = item.depth < options.maxDepth;
+    const linkCandidates = canGoDeeper
+      ? extractLinksFromDom(document, currentUrl, scopeOrigin, scopePathPrefix)
+      : [];
+
+    const result = extractContent(html, currentUrl.toString(), {
+      readabilityDom: dom,
+      cleaningDocument: document.cloneNode(true) as Document,
+    });
     const rewritten = await rewriteLinksInResult(
       result,
       currentUrl.toString(),
@@ -149,43 +162,65 @@ export async function crawlSite(
       knownUrls
     );
     await writeOutputs(currentUrl.toString(), options, rewritten);
-    saved.push(currentUrl.toString());
+    savedCount += 1;
     console.info(`Saved ${currentUrl.toString()} (depth ${item.depth})`);
 
-    if (item.depth >= options.maxDepth) {
+    if (!canGoDeeper) {
       return [];
     }
 
-    return extractLinks(html, currentUrl, scopeOrigin, scopePathPrefix);
+    return linkCandidates;
+  };
+
+  const takeNextItem = (): CrawlQueueItem | null => {
+    const next = queue[queueIndex];
+    if (!next) {
+      return null;
+    }
+    queueIndex += 1;
+    return next;
+  };
+
+  const enqueueLinks = (links: string[], parentDepth: number): void => {
+    for (const link of links) {
+      const pending = queue.length - queueIndex;
+      if (savedCount + pending >= options.maxPages) {
+        break;
+      }
+      const normalizedLink = normalizeForQueue(new URL(link));
+      if (visited.has(normalizedLink) || knownUrls.has(normalizedLink)) {
+        continue;
+      }
+      knownUrls.add(normalizedLink);
+      queue.push({ url: link, depth: parentDepth + 1 });
+    }
   };
 
   const worker = async (): Promise<void> => {
-    while (queue.length > 0 && saved.length < options.maxPages) {
-      const item = queue.shift();
-      if (!item || saved.length >= options.maxPages) {
+    while (true) {
+      if (savedCount >= options.maxPages) {
         return;
       }
+      const item = takeNextItem();
+      if (!item) {
+        if (activeWorkers === 0) {
+          return;
+        }
+        await sleep(5);
+        continue;
+      }
+      activeWorkers += 1;
 
-      const links = await processItem(item);
-      for (const link of links) {
-        if (saved.length + queue.length >= options.maxPages) {
-          break;
-        }
-        const normalizedLink = normalizeForQueue(new URL(link));
-        if (visited.has(normalizedLink)) {
-          continue;
-        }
-        knownUrls.add(normalizedLink);
-        queue.push({ url: link, depth: item.depth + 1 });
+      try {
+        const links = await processItem(item);
+        enqueueLinks(links, item.depth);
+      } finally {
+        activeWorkers -= 1;
       }
     }
   };
 
-  const workerCount = Math.min(
-    options.concurrency,
-    options.maxPages,
-    queue.length || 1
-  );
+  const workerCount = Math.min(options.concurrency, options.maxPages);
   const workers: Promise<void>[] = [];
   for (let i = 0; i < workerCount; i += 1) {
     workers.push(worker());
@@ -193,7 +228,7 @@ export async function crawlSite(
   await Promise.all(workers);
 
   console.info(
-    `Crawl finished. Saved ${saved.length} page(s), skipped ${visited.size - saved.length} item(s).`
+    `Crawl finished. Saved ${savedCount} page(s), skipped ${visited.size - savedCount} item(s).`
   );
   if (failures.length > 0) {
     console.warn(`Failures (${failures.length}):`);

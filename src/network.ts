@@ -1,4 +1,3 @@
-import { JSDOM } from "jsdom";
 import type { CliOptions } from "./types";
 
 export async function fetchWithTimeout(
@@ -64,10 +63,11 @@ export async function fetchWithRetries(
 }
 
 export function hasMeaningfulText(html: string): boolean {
-  const dom = new JSDOM(html);
-  const bodyText =
-    dom.window.document.body.textContent?.replace(/\s+/g, "") ?? "";
-  return bodyText.length > 200;
+  const withoutScripts = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "");
+  const textOnly = withoutScripts.replace(/<[^>]+>/g, " ").replace(/\s+/g, "");
+  return textOnly.length > 200;
 }
 
 export async function renderWithPlaywright(

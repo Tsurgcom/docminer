@@ -9,14 +9,13 @@ import {
   normalizeForQueue,
 } from "./utils";
 
-export function extractLinks(
-  html: string,
+export function extractLinksFromDom(
+  document: Document,
   base: URL,
   scopeOrigin: string,
   scopePathPrefix: string
 ): string[] {
-  const dom = new JSDOM(html, { url: base.toString() });
-  const anchors = dom.window.document.querySelectorAll("a[href]");
+  const anchors = document.querySelectorAll("a[href]");
   const results: string[] = [];
 
   for (const anchor of anchors) {
@@ -44,6 +43,21 @@ export function extractLinks(
   }
 
   return Array.from(new Set(results));
+}
+
+export function extractLinks(
+  html: string,
+  base: URL,
+  scopeOrigin: string,
+  scopePathPrefix: string
+): string[] {
+  const dom = new JSDOM(html, { url: base.toString() });
+  return extractLinksFromDom(
+    dom.window.document,
+    base,
+    scopeOrigin,
+    scopePathPrefix
+  );
 }
 
 export function normalizeHrefTarget(

@@ -3,6 +3,11 @@ import { JSDOM } from "jsdom";
 import { CLUTTER_SELECTORS, turndownService } from "./constants";
 import type { ScrapeResult } from "./types";
 
+export interface ContentDomContext {
+  readabilityDom?: JSDOM;
+  cleaningDocument?: Document;
+}
+
 export function stripClutter(document: Document): {
   cleanedHtml: string;
   clutterHtml: string;
@@ -30,15 +35,22 @@ export function stripClutter(document: Document): {
   return { cleanedHtml, clutterHtml };
 }
 
-export function extractContent(html: string, targetUrl: string): ScrapeResult {
-  const domForReadability = new JSDOM(html, { url: targetUrl });
+export function extractContent(
+  html: string,
+  targetUrl: string,
+  domContext?: ContentDomContext
+): ScrapeResult {
+  const domForReadability =
+    domContext?.readabilityDom ?? new JSDOM(html, { url: targetUrl });
+  const cleaningDocument =
+    domContext?.cleaningDocument ??
+    new JSDOM(html, { url: targetUrl }).window.document;
+
   const reader = new Readability(domForReadability.window.document);
   const article = reader.parse();
 
-  const domForCleaning = new JSDOM(html, { url: targetUrl });
-  const { cleanedHtml: fallbackHtml, clutterHtml } = stripClutter(
-    domForCleaning.window.document
-  );
+  const { cleanedHtml: fallbackHtml, clutterHtml } =
+    stripClutter(cleaningDocument);
 
   const rawBodyHtml = domForReadability.window.document.body.innerHTML;
   let mainHtml = article?.content;
@@ -49,7 +61,10 @@ export function extractContent(html: string, targetUrl: string): ScrapeResult {
         : rawBodyHtml;
   }
   const title =
-    article?.title ?? domForCleaning.window.document.title ?? targetUrl;
+    article?.title ??
+    cleaningDocument.title ??
+    domForReadability.window.document.title ??
+    targetUrl;
 
   const markdownBody = turndownService.turndown(mainHtml);
   const clutterMarkdown = clutterHtml

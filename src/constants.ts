@@ -124,6 +124,6 @@ turndownService.addRule("singleLineAnchors", {
     }
 
     const prefix = "#".repeat(headingLevel);
-    return `${prefix} ${link}`;
+    return `${prefix} ${link}\n`;
   },
 });
