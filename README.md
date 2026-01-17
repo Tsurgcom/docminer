@@ -10,22 +10,22 @@ bun install
 
 ## Usage
 
+Default crawl a site (stays within the starting path):
+
+```bash
+bun run index.ts https://docs.example.com/docs --maxDepth 3 --maxPages 200 --delay 500
+```
+
 Scrape a single page:
 
 ```bash
-bun run index.ts --url https://docs.example.com/path
+bun run index.ts url https://docs.example.com/path
 ```
 
 Scrape from a list (one URL per line, `#` for comments):
 
 ```bash
-bun run index.ts --urls urls.txt --concurrency 4
-```
-
-Crawl a documentation site (stays within the starting path):
-
-```bash
-bun run index.ts --crawl https://bun.com/docs --maxDepth 3 --maxPages 200 --delay 500
+bun run index.ts urls urls.txt --concurrency 4
 ```
 
 The crawler respects `robots.txt` and applies crawl-delay values unless you pass `--no-robots`.
@@ -41,7 +41,8 @@ Common flags:
 - `--userAgent <string>`
 - `--verbose`
 - `--overwrite-llms`
-- `--crawl <url>` to enable crawling mode
 - `--maxDepth <n>` (default 3) and `--maxPages <n>` (default 200) to bound crawl size
 - `--delay <ms>` (default 500) minimum delay between requests
 - `--no-robots` to bypass robots.txt (respected by default)
+
+Targets can be passed as positional commands (`crawl`, `url`, `urls`) or via legacy flags (`--crawl`, `--url`, `--urls`). `crawl` is the default when you provide only a URL.
