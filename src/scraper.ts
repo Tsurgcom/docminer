@@ -1,7 +1,11 @@
 import { JSDOM } from "jsdom";
 import { extractContent } from "./content";
 import { loadUrls, writeOutputs } from "./io";
-import { extractLinksFromDom, rewriteLinksInResult } from "./links";
+import {
+  extractLinksFromDom,
+  resolveDocumentBaseUrl,
+  rewriteLinksInResult,
+} from "./links";
 import { logger } from "./logger";
 import { getPageHtml } from "./network";
 import { buildAllowAllPolicy, loadRobotsPolicy } from "./robots";
@@ -20,12 +24,19 @@ export async function scrapeOne(
     verbose: options.verbose,
     render: options.render,
   });
-  const result = extractContent(html, targetUrl);
+  const dom = new JSDOM(html, { url: targetUrl });
+  const document = dom.window.document;
+  const result = extractContent(html, targetUrl, {
+    readabilityDom: dom,
+    cleaningDocument: document.cloneNode(true) as Document,
+  });
+  const linkBaseUrl = resolveDocumentBaseUrl(document, new URL(targetUrl));
   const rewritten = await rewriteLinksInResult(
     result,
     targetUrl,
     options,
-    knownUrls
+    knownUrls,
+    linkBaseUrl.toString()
   );
   await writeOutputs(targetUrl, options, rewritten);
   logger.logPageSaved(targetUrl);
@@ -130,10 +141,13 @@ export async function crawlSite(
   const failures: string[] = [];
   let savedCount = 0;
   let activeWorkers = 0;
+  let inFlightCount = 0; // Items taken from queue but not yet completed (ensures stable total)
   const knownUrls = new Set<string>([normalizeForQueue(start)]);
 
   const getPendingCount = (): number => queue.length - queueIndex;
-  const getDynamicTotal = (): number => savedCount + getPendingCount();
+  // Total = saved + in-flight + pending (remains stable as items move through states)
+  const getDynamicTotal = (): number =>
+    savedCount + inFlightCount + getPendingCount();
 
   logger.startProgress(getDynamicTotal());
 
@@ -172,10 +186,17 @@ export async function crawlSite(
 
     const dom = new JSDOM(html, { url: currentUrl.toString() });
     const document = dom.window.document;
+    const linkBaseUrl = resolveDocumentBaseUrl(document, currentUrl);
     const canGoDeeper = item.depth < options.maxDepth;
     const linkCandidates = canGoDeeper
       ? extractLinksFromDom(document, currentUrl, scopeOrigin, scopePathPrefix)
       : [];
+    const linkHints =
+      linkCandidates.length > 0
+        ? new Set(
+            linkCandidates.map((link) => normalizeForQueue(new URL(link)))
+          )
+        : undefined;
 
     const result = extractContent(html, currentUrl.toString(), {
       readabilityDom: dom,
@@ -185,7 +206,9 @@ export async function crawlSite(
       result,
       currentUrl.toString(),
       options,
-      knownUrls
+      knownUrls,
+      linkBaseUrl.toString(),
+      linkHints
     );
     await writeOutputs(currentUrl.toString(), options, rewritten);
     savedCount += 1;
@@ -243,11 +266,13 @@ export async function crawlSite(
         continue;
       }
       activeWorkers += 1;
+      inFlightCount += 1;
 
       try {
         const links = await processItem(item);
         enqueueLinks(links, item.depth);
       } finally {
+        inFlightCount -= 1;
         activeWorkers -= 1;
       }
     }

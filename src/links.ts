@@ -17,6 +17,7 @@ export function extractLinksFromDom(
 ): string[] {
   const anchors = document.querySelectorAll("a[href]");
   const results: string[] = [];
+  const baseForResolution = resolveDocumentBaseUrl(document, base);
 
   for (const anchor of anchors) {
     const href = anchor.getAttribute("href");
@@ -24,7 +25,7 @@ export function extractLinksFromDom(
       continue;
     }
     try {
-      const resolved = new URL(href, base);
+      const resolved = new URL(href, baseForResolution);
       if (resolved.origin !== scopeOrigin) {
         continue;
       }
@@ -45,6 +46,18 @@ export function extractLinksFromDom(
   return Array.from(new Set(results));
 }
 
+export function resolveDocumentBaseUrl(document: Document, base: URL): URL {
+  const baseHref = document.querySelector("base[href]")?.getAttribute("href");
+  if (!baseHref) {
+    return base;
+  }
+  try {
+    return new URL(baseHref, base);
+  } catch {
+    return base;
+  }
+}
+
 export function extractLinks(
   html: string,
   base: URL,
@@ -62,7 +75,8 @@ export function extractLinks(
 
 export function normalizeHrefTarget(
   href: string,
-  currentUrl: string
+  currentUrl: string,
+  linkBaseUrl?: string
 ): URL | null {
   if (
     !href ||
@@ -73,7 +87,8 @@ export function normalizeHrefTarget(
     return null;
   }
   try {
-    const target = new URL(href, currentUrl);
+    const baseForResolution = linkBaseUrl ?? currentUrl;
+    const target = new URL(href, baseForResolution);
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       return null;
     }
@@ -89,9 +104,11 @@ export async function resolveLinkToRelative(
   href: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>
+  knownUrls: Set<string>,
+  linkBaseUrl?: string,
+  linkHints?: Set<string>
 ): Promise<string | null> {
-  const target = normalizeHrefTarget(href, currentUrl);
+  const target = normalizeHrefTarget(href, currentUrl, linkBaseUrl);
   if (!target) {
     return null;
   }
@@ -103,7 +120,9 @@ export async function resolveLinkToRelative(
   );
 
   const targetExists =
-    knownUrls.has(normalizedTarget) || (await fileExists(targetPagePath));
+    knownUrls.has(normalizedTarget) ||
+    linkHints?.has(normalizedTarget) ||
+    (await fileExists(targetPagePath));
   if (!targetExists) {
     return null;
   }
@@ -119,7 +138,9 @@ export async function rewriteLinksInMarkdown(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>
+  knownUrls: Set<string>,
+  linkBaseUrl?: string,
+  linkHints?: Set<string>
 ): Promise<string> {
   const linkRegex = /!?\[([^\]]+)\]\(([^)]+)\)/g;
   let result = "";
@@ -143,7 +164,9 @@ export async function rewriteLinksInMarkdown(
       href,
       currentUrl,
       options,
-      knownUrls
+      knownUrls,
+      linkBaseUrl,
+      linkHints
     );
 
     if (replacement) {
@@ -165,10 +188,19 @@ export async function rewriteLinksInResult(
   result: ScrapeResult,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>
+  knownUrls: Set<string>,
+  linkBaseUrl?: string,
+  linkHints?: Set<string>
 ): Promise<ScrapeResult> {
   const rewrite = async (content: string): Promise<string> =>
-    rewriteLinksInMarkdown(content, currentUrl, options, knownUrls);
+    rewriteLinksInMarkdown(
+      content,
+      currentUrl,
+      options,
+      knownUrls,
+      linkBaseUrl,
+      linkHints
+    );
 
   return {
     markdown: await rewrite(result.markdown),
