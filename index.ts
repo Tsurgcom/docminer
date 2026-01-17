@@ -7,6 +7,7 @@ import TurndownService from "turndown";
 interface CliOptions {
   url?: string;
   urlsFile?: string;
+  crawlStart?: string;
   outDir: string;
   concurrency: number;
   timeoutMs: number;
@@ -15,6 +16,10 @@ interface CliOptions {
   verbose: boolean;
   overwriteLlms: boolean;
   render: boolean;
+  maxDepth: number;
+  maxPages: number;
+  delayMs: number;
+  respectRobots: boolean;
 }
 
 interface ScrapeResult {
@@ -22,6 +27,17 @@ interface ScrapeResult {
   clutterMarkdown: string;
   llmsMarkdown: string;
   llmsFullMarkdown: string;
+}
+
+interface RobotsPolicy {
+  isAllowed: (pathname: string) => boolean;
+  crawlDelayMs?: number;
+  source: string;
+}
+
+interface CrawlQueueItem {
+  url: string;
+  depth: number;
 }
 
 const DEFAULT_OPTIONS: CliOptions = {
@@ -33,6 +49,10 @@ const DEFAULT_OPTIONS: CliOptions = {
   verbose: false,
   overwriteLlms: false,
   render: true,
+  maxDepth: 3,
+  maxPages: 200,
+  delayMs: 500,
+  respectRobots: true,
 };
 
 const CLUTTER_SELECTORS = [
@@ -51,11 +71,20 @@ const CLUTTER_SELECTORS = [
   "[aria-label='skip to content']",
 ];
 
+const BLOCKED_EXTENSIONS_REGEX =
+  /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|mp4|mp3|woff2?|ttf|eot)$/i;
+
 const turndownService = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
 });
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 const argv = process.argv.slice(2);
 const LINE_SPLIT_REGEX = /\r?\n/;
@@ -79,6 +108,9 @@ function parseArgs(args: string[]): CliOptions {
     },
     "--urls": (valueFromEq) => {
       opts.urlsFile = consumeNext(valueFromEq);
+    },
+    "--crawl": (valueFromEq) => {
+      opts.crawlStart = consumeNext(valueFromEq);
     },
     "--outDir": (valueFromEq) => {
       opts.outDir = consumeNext(valueFromEq) ?? DEFAULT_OPTIONS.outDir;
@@ -110,6 +142,21 @@ function parseArgs(args: string[]): CliOptions {
     "--no-render": () => {
       opts.render = false;
     },
+    "--maxDepth": (valueFromEq) => {
+      const raw = consumeNext(valueFromEq);
+      opts.maxDepth = parsePositiveInt(raw, DEFAULT_OPTIONS.maxDepth);
+    },
+    "--maxPages": (valueFromEq) => {
+      const raw = consumeNext(valueFromEq);
+      opts.maxPages = parsePositiveInt(raw, DEFAULT_OPTIONS.maxPages);
+    },
+    "--delay": (valueFromEq) => {
+      const raw = consumeNext(valueFromEq);
+      opts.delayMs = parsePositiveInt(raw, DEFAULT_OPTIONS.delayMs);
+    },
+    "--no-robots": () => {
+      opts.respectRobots = false;
+    },
     "--help": () => {
       printHelp();
       process.exit(0);
@@ -126,7 +173,7 @@ function parseArgs(args: string[]): CliOptions {
     }
   }
 
-  if (!(opts.url || opts.urlsFile)) {
+  if (!(opts.url || opts.urlsFile || opts.crawlStart)) {
     const firstArg = positionalArgs[0];
     if (firstArg) {
       try {
@@ -135,13 +182,13 @@ function parseArgs(args: string[]): CliOptions {
       } catch {
         printHelp();
         console.error(
-          `"${firstArg}" is not a valid URL. Provide --url or --urls <file>`
+          `"${firstArg}" is not a valid URL. Provide --url, --urls <file>, or --crawl <url>`
         );
         process.exit(1);
       }
     } else {
       printHelp();
-      console.error("Provide --url or --urls <file>");
+      console.error("Provide --url, --urls <file>, or --crawl <url>");
       process.exit(1);
     }
   }
@@ -270,6 +317,174 @@ async function fetchWithRetries(
     : new Error("Failed to fetch URL");
 }
 
+function buildAllowAllPolicy(): RobotsPolicy {
+  return {
+    isAllowed: () => true,
+    source: "allow-all",
+  };
+}
+
+function normalizeRulePath(rule: string): string {
+  if (!rule.startsWith("/")) {
+    return `/${rule}`;
+  }
+  return rule;
+}
+
+function selectAgentPolicy(
+  rules: Map<
+    string,
+    { allow: string[]; disallow: string[]; crawlDelayMs?: number }
+  >,
+  userAgent: string
+): { allow: string[]; disallow: string[]; crawlDelayMs?: number } | undefined {
+  const lowerUA = userAgent.toLowerCase();
+  if (rules.has(lowerUA)) {
+    return rules.get(lowerUA);
+  }
+  for (const [agent, policy] of rules.entries()) {
+    if (agent !== "*" && lowerUA.includes(agent)) {
+      return policy;
+    }
+  }
+  return rules.get("*");
+}
+
+function parseRobotsTxt(robotsText: string, userAgent: string): RobotsPolicy {
+  const rules = new Map<
+    string,
+    { allow: string[]; disallow: string[]; crawlDelayMs?: number }
+  >();
+  let currentAgents = new Set<string>();
+
+  const ensureEntry = (agent: string): void => {
+    if (!rules.has(agent)) {
+      rules.set(agent, { allow: [], disallow: [] });
+    }
+  };
+
+  const applyToAgents = (
+    handler: (entry: {
+      allow: string[];
+      disallow: string[];
+      crawlDelayMs?: number;
+    }) => void
+  ): void => {
+    if (currentAgents.size === 0) {
+      currentAgents.add("*");
+    }
+    for (const agent of currentAgents) {
+      ensureEntry(agent);
+      const entry = rules.get(agent);
+      if (entry) {
+        handler(entry);
+      }
+    }
+  };
+
+  const lines = robotsText.split(LINE_SPLIT_REGEX);
+  for (const rawLine of lines) {
+    const line = rawLine.split("#", 1)[0]?.trim();
+    if (!line) {
+      continue;
+    }
+    const [directiveRaw = "", valueRaw = ""] = line.split(":", 2);
+    const directive = directiveRaw.trim().toLowerCase();
+    const value = valueRaw.trim();
+
+    if (directive === "user-agent") {
+      const agent = value.toLowerCase();
+      currentAgents = new Set([agent]);
+      ensureEntry(agent);
+      continue;
+    }
+
+    if (directive === "allow") {
+      applyToAgents((entry) => {
+        entry.allow.push(normalizeRulePath(value));
+      });
+      continue;
+    }
+
+    if (directive === "disallow") {
+      applyToAgents((entry) => {
+        entry.disallow.push(normalizeRulePath(value));
+      });
+      continue;
+    }
+
+    if (directive === "crawl-delay") {
+      const delaySeconds = Number.parseFloat(value);
+      if (Number.isFinite(delaySeconds)) {
+        const delayMs = delaySeconds * 1000;
+        applyToAgents((entry) => {
+          entry.crawlDelayMs = delayMs;
+        });
+      }
+    }
+  }
+
+  const policy = selectAgentPolicy(rules, userAgent);
+  if (!policy) {
+    return buildAllowAllPolicy();
+  }
+
+  const allowRules = policy.allow;
+  const disallowRules = policy.disallow;
+  const evaluate = (pathname: string): boolean => {
+    let longestAllow = "";
+    let longestDisallow = "";
+    for (const rule of allowRules) {
+      if (pathname.startsWith(rule) && rule.length > longestAllow.length) {
+        longestAllow = rule;
+      }
+    }
+    for (const rule of disallowRules) {
+      if (pathname.startsWith(rule) && rule.length > longestDisallow.length) {
+        longestDisallow = rule;
+      }
+    }
+    if (longestAllow.length === 0 && longestDisallow.length === 0) {
+      return true;
+    }
+    if (longestAllow.length >= longestDisallow.length) {
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    isAllowed: evaluate,
+    crawlDelayMs: policy.crawlDelayMs,
+    source: "robots.txt",
+  };
+}
+
+async function loadRobotsPolicy(
+  baseUrl: URL,
+  options: Pick<CliOptions, "timeoutMs" | "userAgent" | "verbose">
+): Promise<RobotsPolicy> {
+  const robotsUrl = new URL("/robots.txt", baseUrl.origin).toString();
+  try {
+    const text = await fetchWithTimeout(
+      robotsUrl,
+      options.timeoutMs,
+      options.userAgent
+    );
+    if (options.verbose) {
+      console.info(`Loaded robots.txt from ${robotsUrl}`);
+    }
+    return parseRobotsTxt(text, options.userAgent);
+  } catch (error) {
+    if (options.verbose) {
+      console.warn(
+        `Could not load robots.txt from ${robotsUrl}: ${String(error)}`
+      );
+    }
+    return buildAllowAllPolicy();
+  }
+}
+
 function stripClutter(document: Document): {
   cleanedHtml: string;
   clutterHtml: string;
@@ -330,7 +545,7 @@ function extractContent(html: string, targetUrl: string): ScrapeResult {
     `Source: ${targetUrl}`,
     `Fetched: ${new Date().toISOString()}`,
     "---\n",
-    `# ${title}`,
+    `# ${title}\n`,
   ].join("\n");
 
   return {
@@ -456,6 +671,69 @@ async function loadUrls(opts: CliOptions): Promise<string[]> {
   return unique;
 }
 
+function normalizeForQueue(target: URL): string {
+  const clone = new URL(target.toString());
+  clone.hash = "";
+  clone.search = "";
+  return clone.toString();
+}
+
+function isHtmlCandidate(url: URL): boolean {
+  return !BLOCKED_EXTENSIONS_REGEX.test(url.pathname);
+}
+
+function isPathInScope(pathname: string, scopePath: string): boolean {
+  if (scopePath === "/") {
+    return true;
+  }
+  const bareScope = scopePath.endsWith("/")
+    ? scopePath.slice(0, -1) || "/"
+    : scopePath;
+  const normalizedScope = bareScope === "/" ? "/" : `${bareScope}/`;
+  return (
+    pathname === bareScope ||
+    pathname === normalizedScope ||
+    pathname.startsWith(normalizedScope)
+  );
+}
+
+function extractLinks(
+  html: string,
+  base: URL,
+  scopeOrigin: string,
+  scopePathPrefix: string
+): string[] {
+  const dom = new JSDOM(html, { url: base.toString() });
+  const anchors = dom.window.document.querySelectorAll("a[href]");
+  const results: string[] = [];
+
+  for (const anchor of anchors) {
+    const href = anchor.getAttribute("href");
+    if (!href) {
+      continue;
+    }
+    try {
+      const resolved = new URL(href, base);
+      if (resolved.origin !== scopeOrigin) {
+        continue;
+      }
+      if (!isPathInScope(resolved.pathname, scopePathPrefix)) {
+        continue;
+      }
+      if (!isHtmlCandidate(resolved)) {
+        continue;
+      }
+      resolved.hash = "";
+      resolved.search = "";
+      results.push(resolved.toString());
+    } catch {
+      // ignore invalid URLs
+    }
+  }
+
+  return Array.from(new Set(results));
+}
+
 async function scrapeOne(
   targetUrl: string,
   options: CliOptions
@@ -501,12 +779,148 @@ async function runWithConcurrency(
   await Promise.all(workers);
 }
 
+async function crawlSite(startUrl: string, options: CliOptions): Promise<void> {
+  const start = new URL(startUrl);
+  const scopeOrigin = start.origin;
+  const scopePathPrefix = start.pathname.endsWith("/")
+    ? start.pathname
+    : `${start.pathname}`;
+  const robotsPolicy = options.respectRobots
+    ? await loadRobotsPolicy(start, {
+        timeoutMs: options.timeoutMs,
+        userAgent: options.userAgent,
+        verbose: options.verbose,
+      })
+    : buildAllowAllPolicy();
+
+  const effectiveDelay = Math.max(
+    options.delayMs,
+    robotsPolicy.crawlDelayMs ?? 0
+  );
+  let throttle = Promise.resolve();
+  let nextAllowed = 0;
+
+  const rateLimit = async (): Promise<void> => {
+    if (effectiveDelay <= 0) {
+      return;
+    }
+    let release: () => void = () => undefined;
+    const previous = throttle;
+    throttle = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    const now = Date.now();
+    const wait = Math.max(0, nextAllowed - now);
+    nextAllowed = Math.max(now, nextAllowed) + effectiveDelay;
+    release();
+    if (wait > 0) {
+      await sleep(wait);
+    }
+  };
+
+  const queue: CrawlQueueItem[] = [{ url: start.toString(), depth: 0 }];
+  const visited = new Set<string>();
+  const failures: string[] = [];
+  const saved: string[] = [];
+
+  const processItem = async (item: CrawlQueueItem): Promise<string[]> => {
+    const normalized = normalizeForQueue(new URL(item.url));
+    if (visited.has(normalized)) {
+      return [];
+    }
+    visited.add(normalized);
+
+    const currentUrl = new URL(item.url);
+    if (!robotsPolicy.isAllowed(currentUrl.pathname)) {
+      console.info(`Blocked by robots.txt: ${currentUrl.toString()}`);
+      return [];
+    }
+
+    await rateLimit();
+
+    let html: string;
+    try {
+      html = await getPageHtml(currentUrl.toString(), {
+        timeoutMs: options.timeoutMs,
+        retries: options.retries,
+        userAgent: options.userAgent,
+        verbose: options.verbose,
+        render: options.render,
+      });
+    } catch (error) {
+      const reason = `Failed ${currentUrl.toString()}: ${String(error)}`;
+      failures.push(reason);
+      console.error(reason);
+      return [];
+    }
+
+    const result = extractContent(html, currentUrl.toString());
+    await writeOutputs(currentUrl.toString(), options, result);
+    saved.push(currentUrl.toString());
+    console.info(`Saved ${currentUrl.toString()} (depth ${item.depth})`);
+
+    if (item.depth >= options.maxDepth) {
+      return [];
+    }
+
+    return extractLinks(html, currentUrl, scopeOrigin, scopePathPrefix);
+  };
+
+  const worker = async (): Promise<void> => {
+    while (queue.length > 0 && saved.length < options.maxPages) {
+      const item = queue.shift();
+      if (!item || saved.length >= options.maxPages) {
+        return;
+      }
+
+      const links = await processItem(item);
+      for (const link of links) {
+        if (saved.length + queue.length >= options.maxPages) {
+          break;
+        }
+        const normalizedLink = normalizeForQueue(new URL(link));
+        if (visited.has(normalizedLink)) {
+          continue;
+        }
+        queue.push({ url: link, depth: item.depth + 1 });
+      }
+    }
+  };
+
+  const workerCount = Math.min(
+    options.concurrency,
+    options.maxPages,
+    queue.length || 1
+  );
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < workerCount; i += 1) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+
+  console.info(
+    `Crawl finished. Saved ${saved.length} page(s), skipped ${visited.size - saved.length} item(s).`
+  );
+  if (failures.length > 0) {
+    console.warn(`Failures (${failures.length}):`);
+    for (const failure of failures) {
+      console.warn(` - ${failure}`);
+    }
+  }
+}
+
 function printHelp(): void {
   const lines = [
-    "Usage: bun run index.ts --url <url> [options]",
+    "Usage: bun run index.ts (--url <url> | --urls <file> | --crawl <url>) [options]",
     "Options:",
     "  --url <url>            Single URL to scrape",
     "  --urls <file>          File containing URLs (one per line, # for comments)",
+    "  --crawl <url>          Crawl starting URL and recurse within its path",
+    "  --maxDepth <n>         Max crawl depth from start (default 3)",
+    "  --maxPages <n>         Max pages to fetch during crawl (default 200)",
+    "  --delay <ms>           Minimum delay between requests (default 500)",
+    "  --no-robots            Ignore robots.txt (respect by default)",
     "  --outDir <path>        Output directory (default .docs)",
     "  --concurrency <n>      Parallel workers (default 4)",
     "  --timeout <ms>         Fetch timeout in ms (default 15000)",
@@ -523,8 +937,12 @@ function printHelp(): void {
 async function main(): Promise<void> {
   try {
     const options = parseArgs(argv);
-    const urls = await loadUrls(options);
-    await runWithConcurrency(urls, options);
+    if (options.crawlStart) {
+      await crawlSite(options.crawlStart, options);
+    } else {
+      const urls = await loadUrls(options);
+      await runWithConcurrency(urls, options);
+    }
   } catch (error) {
     console.error(String(error));
     process.exitCode = 1;
