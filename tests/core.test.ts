@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseArgs } from "../src/args";
-import { DEFAULT_OPTIONS } from "../src/constants";
+import { DEFAULT_OPTIONS, turndownService } from "../src/constants";
 import {
   extractLinks,
   normalizeHrefTarget,
@@ -151,5 +151,21 @@ describe("link utilities", () => {
       knownUrls
     );
     expect(rewritten).toBe("[Doc](overview/page.md)");
+  });
+});
+
+describe("turndown formatting", () => {
+  test("collapses multiline anchor text into a single line", () => {
+    const markdown = turndownService.turndown(
+      '<a href="https://example.com">First line<br>Second line</a>'
+    );
+    expect(markdown).toBe("[First line Second line](https://example.com)");
+  });
+
+  test("promotes nested headings inside links to the topmost level", () => {
+    const markdown = turndownService.turndown(
+      '<a href="https://example.com"><h2>Sub</h2><h1>Main</h1></a>'
+    );
+    expect(markdown).toBe("# [Sub Main](https://example.com)");
   });
 });
