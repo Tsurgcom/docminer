@@ -1,14 +1,50 @@
 import { DEFAULT_OPTIONS } from "./constants";
 import { logger } from "./logger";
-import type { CliOptions } from "./types";
+import type { CliOptions, FindOptions } from "./types";
 import { parsePositiveInt } from "./utils";
 
-export interface ParseResult {
+export const DEFAULT_FIND_OPTIONS: FindOptions = {
+  query: "",
+  directory: ".docs",
+  filesOnly: false,
+  contentOnly: false,
+  limit: 20,
+  contextLines: 2,
+};
+
+export interface ScrapeParseResult {
+  command: "scrape";
   options: CliOptions;
   showHelp: boolean;
 }
 
+export interface FindParseResult {
+  command: "find";
+  options: FindOptions;
+  showHelp: boolean;
+}
+
+export type ParseResult = ScrapeParseResult | FindParseResult;
+
 export function printHelp(): void {
+  const lines = [
+    "Usage:",
+    "  aidocs [crawl] <url> [options]   Crawl and scrape documentation",
+    "  aidocs url <url> [options]       Scrape a single page",
+    "  aidocs urls <file> [options]     Scrape pages from a file",
+    "  aidocs find <query> [options]    Search scraped docs",
+    "",
+    "Run 'aidocs <command> --help' for command-specific options.",
+    "",
+    "Examples:",
+    "  aidocs https://example.com",
+    "  aidocs crawl https://example.com/docs -d 5",
+    '  aidocs find "hooks"',
+  ];
+  console.info(lines.join("\n"));
+}
+
+export function printScrapeHelp(): void {
   const lines = [
     "Usage:",
     "  aidocs [crawl] <url> [options]   (default)",
@@ -44,6 +80,31 @@ export function printHelp(): void {
   console.info(lines.join("\n"));
 }
 
+export function printFindHelp(): void {
+  const lines = [
+    "Usage:",
+    "  aidocs find <query> [options]",
+    "",
+    "Search through scraped documentation using fuzzy matching.",
+    "",
+    "Options:",
+    "  -d, --directory <path>   Directory to search (default: .docs)",
+    "      --files-only         Only search file paths",
+    "      --content-only       Only search file content",
+    "  -l, --limit <n>          Max results to show (default: 20)",
+    "  -C, --context <n>        Lines of context around matches (default: 2)",
+    "",
+    "  -h, --help               Show this help",
+    "",
+    "Examples:",
+    '  aidocs find "catalogs"',
+    '  aidocs find "react hooks" --files-only',
+    '  aidocs find "api" -l 10 -C 4',
+    '  aidocs find "config" -d ./other-docs',
+  ];
+  console.info(lines.join("\n"));
+}
+
 type FlagHandler = (valueFromEq: string | undefined) => void;
 
 interface FlagDefinition {
@@ -51,7 +112,113 @@ interface FlagDefinition {
   aliases?: string[];
 }
 
+function parseFindArgs(args: string[]): FindParseResult {
+  const opts: FindOptions = { ...DEFAULT_FIND_OPTIONS };
+  let showHelp = false;
+
+  const iterator = args[Symbol.iterator]();
+  const positionalArgs: string[] = [];
+
+  const consumeNext = (valueFromEq: string | undefined): string | undefined => {
+    if (valueFromEq) {
+      return valueFromEq;
+    }
+    const next = iterator.next();
+    return next.done ? undefined : next.value;
+  };
+
+  const flagDefinitions: FlagDefinition[] = [
+    {
+      handler: (v) => {
+        opts.directory = consumeNext(v) ?? DEFAULT_FIND_OPTIONS.directory;
+      },
+      aliases: ["-d", "--directory", "--dir"],
+    },
+    {
+      handler: () => {
+        opts.filesOnly = true;
+      },
+      aliases: ["--files-only", "--files"],
+    },
+    {
+      handler: () => {
+        opts.contentOnly = true;
+      },
+      aliases: ["--content-only", "--content"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.limit = parsePositiveInt(raw, DEFAULT_FIND_OPTIONS.limit);
+      },
+      aliases: ["-l", "--limit"],
+    },
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.contextLines = parsePositiveInt(
+          raw,
+          DEFAULT_FIND_OPTIONS.contextLines
+        );
+      },
+      aliases: ["-c", "--context"],
+    },
+    {
+      handler: () => {
+        showHelp = true;
+      },
+      aliases: ["-h", "--help"],
+    },
+  ];
+
+  const handlers = new Map<string, FlagHandler>();
+  for (const def of flagDefinitions) {
+    if (def.aliases) {
+      for (const alias of def.aliases) {
+        handlers.set(alias, def.handler);
+      }
+    }
+  }
+
+  for (const arg of iterator) {
+    const [flag, valueFromEq] = arg.split("=", 2);
+    const normalizedFlag = flag?.toLowerCase();
+    const handler = handlers.get(normalizedFlag ?? "");
+
+    if (handler) {
+      handler(valueFromEq);
+    } else {
+      positionalArgs.push(arg);
+    }
+  }
+
+  // First positional arg is the query
+  const firstArg = positionalArgs[0];
+  if (firstArg) {
+    opts.query = firstArg;
+  }
+
+  if (positionalArgs.length > 1) {
+    logger.warn(
+      `Ignoring extra positional arguments: ${positionalArgs.slice(1).join(", ")}`
+    );
+  }
+
+  // If no query provided, show help
+  if (!(opts.query || showHelp)) {
+    showHelp = true;
+  }
+
+  return { command: "find", options: opts, showHelp };
+}
+
 export function parseArgs(args: string[]): ParseResult {
+  // Check if first argument is "find" command
+  const firstArg = args[0];
+  if (firstArg?.toLowerCase() === "find") {
+    return parseFindArgs(args.slice(1));
+  }
+
   const opts: CliOptions = { ...DEFAULT_OPTIONS };
 
   const iterator = args[Symbol.iterator]();
@@ -324,5 +491,5 @@ export function parseArgs(args: string[]): ParseResult {
 
   applyTargetFromPositional();
 
-  return { options: opts, showHelp };
+  return { command: "scrape", options: opts, showHelp };
 }

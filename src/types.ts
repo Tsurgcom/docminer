@@ -34,3 +34,30 @@ export interface CrawlQueueItem {
   url: string;
   depth: number;
 }
+
+export interface FindOptions {
+  query: string;
+  directory: string;
+  filesOnly: boolean;
+  contentOnly: boolean;
+  limit: number;
+  contextLines: number;
+}
+
+export interface ContentMatch {
+  lineNumber: number;
+  line: string;
+  matchIndex: number;
+  matchLength: number;
+  contextBefore: string[];
+  contextAfter: string[];
+}
+
+export interface FindResult {
+  filePath: string;
+  relativePath: string;
+  score: number;
+  matchType: "path" | "content";
+  pathIndices?: number[];
+  contentMatches?: ContentMatch[];
+}

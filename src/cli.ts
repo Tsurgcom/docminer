@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { parseArgs, printHelp } from "./args";
+import { parseArgs, printFindHelp, printHelp, printScrapeHelp } from "./args";
+import { runFindCommand } from "./find";
 import { logger } from "./logger";
 import { runCliFlow } from "./scraper";
 
@@ -7,20 +8,38 @@ const argv = process.argv.slice(2);
 
 export async function main(): Promise<void> {
   try {
-    const { options, showHelp } = parseArgs(argv);
+    const result = parseArgs(argv);
 
-    // Configure logger with verbose and progress settings
-    logger.configure({
-      verbose: options.verbose,
-      showProgress: options.progress,
-    });
-
-    if (showHelp) {
-      printHelp();
+    if (result.command === "find") {
+      if (result.showHelp) {
+        printFindHelp();
+        return;
+      }
+      await runFindCommand(result.options);
       return;
     }
 
-    await runCliFlow(options);
+    // Scrape command
+    if (result.showHelp) {
+      // Show general help if no target was provided, scrape help if --help was explicit
+      const hasExplicitHelpFlag = argv.some(
+        (arg) => arg === "-h" || arg === "--help"
+      );
+      if (hasExplicitHelpFlag) {
+        printScrapeHelp();
+      } else {
+        printHelp();
+      }
+      return;
+    }
+
+    // Configure logger with verbose and progress settings for scrape commands
+    logger.configure({
+      verbose: result.options.verbose,
+      showProgress: result.options.progress,
+    });
+
+    await runCliFlow(result.options);
   } catch (error) {
     printHelp();
     logger.error(String(error));
