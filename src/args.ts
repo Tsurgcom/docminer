@@ -15,29 +15,40 @@ export function printHelp(): void {
     "  aidocs url <url> [options]       (single page)",
     "  aidocs urls <file> [options]     (list of pages)",
     "",
-    "Targets can also be provided with legacy flags: --crawl, --url, --urls",
+    "Targets can also be provided with flags: --crawl, --url, --urls",
+    "",
     "Options:",
-    "  --maxDepth <n>         Max crawl depth from start (default 3)",
-    "  --maxPages <n>         Max pages to fetch during crawl (default 200)",
-    "  --delay <ms>           Minimum delay between requests (default 500)",
-    "  --no-robots            Ignore robots.txt (respect by default)",
-    "  --outDir <path>        Output directory (default .docs)",
-    "  --concurrency <n>      Parallel workers (default 4)",
-    "  --timeout <ms>         Fetch timeout in ms (default 15000)",
-    "  --retries <n>          Retry attempts (default 2)",
-    "  --userAgent <string>   Custom User-Agent header",
-    "  --verbose              Verbose logging",
-    "  --overwrite-llms       Overwrite .llms.md and llms-full.md outputs",
-    "  --no-render            Skip headless rendering fallback for SPAs",
-    "  --help                 Show this help",
+    "  -d, --max-depth <n>      Max crawl depth from start (default: 3)",
+    "  -p, --max-pages <n>      Max pages to fetch during crawl (default: 200)",
+    "      --delay <ms>         Minimum delay between requests (default: 500)",
+    "  -o, --output <path>      Output directory (default: .docs)",
+    "  -c, --concurrency <n>    Parallel workers (default: 4)",
+    "  -t, --timeout <ms>       Fetch timeout in ms (default: 15000)",
+    "      --retries <n>        Retry attempts (default: 2)",
+    "  -a, --user-agent <str>   Custom User-Agent header",
+    "",
+    "  -v, --[no-]verbose       Enable/disable verbose logging (default: off)",
+    "  -r, --[no-]robots        Respect/ignore robots.txt (default: on)",
+    "      --[no-]render        Enable/disable headless rendering for SPAs (default: on)",
+    "      --[no-]progress      Show/hide progress bar (default: on)",
+    "      --[no-]overwrite     Overwrite existing .llms.md files (default: off)",
+    "",
+    "  -h, --help               Show this help",
     "",
     "Examples:",
     "  aidocs https://example.com",
-    "  aidocs crawl https://example.com/docs",
-    "  aidocs url https://example.com/about",
-    "  aidocs urls urls.txt",
+    "  aidocs crawl https://example.com/docs -d 5 -p 100",
+    "  aidocs url https://example.com/about -v",
+    "  aidocs urls urls.txt -c 8 --no-render",
   ];
   console.info(lines.join("\n"));
+}
+
+type FlagHandler = (valueFromEq: string | undefined) => void;
+
+interface FlagDefinition {
+  handler: FlagHandler;
+  aliases?: string[];
 }
 
 export function parseArgs(args: string[]): ParseResult {
@@ -55,69 +66,178 @@ export function parseArgs(args: string[]): ParseResult {
     return next.done ? undefined : next.value;
   };
 
-  const handlers: Record<string, (valueFromEq: string | undefined) => void> = {
-    "--url": (valueFromEq) => {
-      opts.url = consumeNext(valueFromEq);
+  // Define all flag handlers with their primary flag and aliases
+  const flagDefinitions: FlagDefinition[] = [
+    // Target flags
+    {
+      handler: (v) => {
+        opts.url = consumeNext(v);
+      },
+      aliases: ["--url"],
     },
-    "--urls": (valueFromEq) => {
-      opts.urlsFile = consumeNext(valueFromEq);
+    {
+      handler: (v) => {
+        opts.urlsFile = consumeNext(v);
+      },
+      aliases: ["--urls"],
     },
-    "--crawl": (valueFromEq) => {
-      opts.crawlStart = consumeNext(valueFromEq);
+    {
+      handler: (v) => {
+        opts.crawlStart = consumeNext(v);
+      },
+      aliases: ["--crawl"],
     },
-    "--outDir": (valueFromEq) => {
-      opts.outDir = consumeNext(valueFromEq) ?? DEFAULT_OPTIONS.outDir;
+
+    // Output directory
+    {
+      handler: (v) => {
+        opts.outDir = consumeNext(v) ?? DEFAULT_OPTIONS.outDir;
+      },
+      aliases: ["-o", "--output", "--out-dir", "--outdir"],
     },
-    "--concurrency": (valueFromEq) => {
-      const raw = consumeNext(valueFromEq);
-      opts.concurrency = parsePositiveInt(raw, DEFAULT_OPTIONS.concurrency);
+
+    // Crawl settings
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.maxDepth = parsePositiveInt(raw, DEFAULT_OPTIONS.maxDepth);
+      },
+      aliases: ["-d", "--max-depth", "--maxdepth"],
     },
-    "--timeout": (valueFromEq) => {
-      const raw = consumeNext(valueFromEq);
-      opts.timeoutMs = parsePositiveInt(raw, DEFAULT_OPTIONS.timeoutMs);
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.maxPages = parsePositiveInt(raw, DEFAULT_OPTIONS.maxPages);
+      },
+      aliases: ["-p", "--max-pages", "--maxpages"],
     },
-    "--retries": (valueFromEq) => {
-      const raw = consumeNext(valueFromEq);
-      opts.retries = parsePositiveInt(raw, DEFAULT_OPTIONS.retries);
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.delayMs = parsePositiveInt(raw, DEFAULT_OPTIONS.delayMs);
+      },
+      aliases: ["--delay"],
     },
-    "--userAgent": (valueFromEq) => {
-      opts.userAgent = consumeNext(valueFromEq) ?? DEFAULT_OPTIONS.userAgent;
+
+    // Network settings
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.concurrency = parsePositiveInt(raw, DEFAULT_OPTIONS.concurrency);
+      },
+      aliases: ["-c", "--concurrency"],
     },
-    "--verbose": () => {
-      opts.verbose = true;
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.timeoutMs = parsePositiveInt(raw, DEFAULT_OPTIONS.timeoutMs);
+      },
+      aliases: ["-t", "--timeout"],
     },
-    "--overwrite-llms": () => {
-      opts.overwriteLlms = true;
+    {
+      handler: (v) => {
+        const raw = consumeNext(v);
+        opts.retries = parsePositiveInt(raw, DEFAULT_OPTIONS.retries);
+      },
+      aliases: ["--retries"],
     },
-    "--render": () => {
-      opts.render = true;
+    {
+      handler: (v) => {
+        opts.userAgent = consumeNext(v) ?? DEFAULT_OPTIONS.userAgent;
+      },
+      aliases: ["-a", "--user-agent", "--useragent"],
     },
-    "--no-render": () => {
-      opts.render = false;
+
+    // Boolean flags with --no- variants
+    {
+      handler: () => {
+        opts.verbose = true;
+      },
+      aliases: ["-v", "--verbose"],
     },
-    "--maxDepth": (valueFromEq) => {
-      const raw = consumeNext(valueFromEq);
-      opts.maxDepth = parsePositiveInt(raw, DEFAULT_OPTIONS.maxDepth);
+    {
+      handler: () => {
+        opts.verbose = false;
+      },
+      aliases: ["--no-verbose"],
     },
-    "--maxPages": (valueFromEq) => {
-      const raw = consumeNext(valueFromEq);
-      opts.maxPages = parsePositiveInt(raw, DEFAULT_OPTIONS.maxPages);
+
+    {
+      handler: () => {
+        opts.respectRobots = true;
+      },
+      aliases: ["-r", "--robots"],
     },
-    "--delay": (valueFromEq) => {
-      const raw = consumeNext(valueFromEq);
-      opts.delayMs = parsePositiveInt(raw, DEFAULT_OPTIONS.delayMs);
+    {
+      handler: () => {
+        opts.respectRobots = false;
+      },
+      aliases: ["--no-robots"],
     },
-    "--no-robots": () => {
-      opts.respectRobots = false;
+
+    {
+      handler: () => {
+        opts.render = true;
+      },
+      aliases: ["--render"],
     },
-    "--help": () => {
-      showHelp = true;
+    {
+      handler: () => {
+        opts.render = false;
+      },
+      aliases: ["--no-render"],
     },
-  };
+
+    {
+      handler: () => {
+        opts.progress = true;
+      },
+      aliases: ["--progress"],
+    },
+    {
+      handler: () => {
+        opts.progress = false;
+      },
+      aliases: ["--no-progress"],
+    },
+
+    {
+      handler: () => {
+        opts.overwriteLlms = true;
+      },
+      aliases: ["--overwrite", "--overwrite-llms"],
+    },
+    {
+      handler: () => {
+        opts.overwriteLlms = false;
+      },
+      aliases: ["--no-overwrite", "--no-overwrite-llms"],
+    },
+
+    // Help
+    {
+      handler: () => {
+        showHelp = true;
+      },
+      aliases: ["-h", "--help"],
+    },
+  ];
+
+  // Build a lookup map from all aliases to their handlers
+  const handlers = new Map<string, FlagHandler>();
+  for (const def of flagDefinitions) {
+    if (def.aliases) {
+      for (const alias of def.aliases) {
+        handlers.set(alias, def.handler);
+      }
+    }
+  }
 
   for (const arg of iterator) {
     const [flag, valueFromEq] = arg.split("=", 2);
-    const handler = handlers[flag as keyof typeof handlers];
+    const normalizedFlag = flag?.toLowerCase();
+    const handler = handlers.get(normalizedFlag ?? "");
+
     if (handler) {
       handler(valueFromEq);
     } else {

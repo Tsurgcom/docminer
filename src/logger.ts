@@ -35,6 +35,7 @@ export type LogLevel = "debug" | "info" | "success" | "warn" | "error";
 
 interface LoggerConfig {
   verbose: boolean;
+  showProgress: boolean;
 }
 
 interface ProgressState {
@@ -65,7 +66,7 @@ const levelStyles: Record<LogLevel, { color: string; prefix: string }> = {
 };
 
 class Logger {
-  private config: LoggerConfig = { verbose: false };
+  private config: LoggerConfig = { verbose: false, showProgress: true };
   private progress: ProgressState | null = null;
   private progressLineCount = 0; // Number of lines used by progress display
   private readonly isTerminal = process.stdout.isTTY ?? false;
@@ -200,7 +201,7 @@ class Logger {
       isActive: true,
     };
 
-    if (this.isTerminal) {
+    if (this.isTerminal && this.config.showProgress) {
       process.stdout.write(ANSI.hideCursor);
     }
 
@@ -292,7 +293,9 @@ class Logger {
   }
 
   private renderProgress(): void {
-    if (!(this.progress?.isActive && this.isTerminal)) {
+    if (
+      !(this.progress?.isActive && this.isTerminal && this.config.showProgress)
+    ) {
       return;
     }
 

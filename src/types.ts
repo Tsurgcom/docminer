@@ -10,6 +10,7 @@ export interface CliOptions {
   verbose: boolean;
   overwriteLlms: boolean;
   render: boolean;
+  progress: boolean;
   maxDepth: number;
   maxPages: number;
   delayMs: number;

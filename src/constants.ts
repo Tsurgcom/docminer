@@ -10,6 +10,7 @@ export const DEFAULT_OPTIONS: CliOptions = {
   verbose: false,
   overwriteLlms: false,
   render: true,
+  progress: true,
   maxDepth: 3,
   maxPages: 200,
   delayMs: 500,

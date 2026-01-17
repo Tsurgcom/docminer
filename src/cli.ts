@@ -9,8 +9,11 @@ export async function main(): Promise<void> {
   try {
     const { options, showHelp } = parseArgs(argv);
 
-    // Configure logger with verbose setting
-    logger.configure({ verbose: options.verbose });
+    // Configure logger with verbose and progress settings
+    logger.configure({
+      verbose: options.verbose,
+      showProgress: options.progress,
+    });
 
     if (showHelp) {
       printHelp();
