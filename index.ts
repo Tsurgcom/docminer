@@ -1,0 +1,534 @@
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { Readability } from "@mozilla/readability";
+import { JSDOM } from "jsdom";
+import TurndownService from "turndown";
+
+interface CliOptions {
+  url?: string;
+  urlsFile?: string;
+  outDir: string;
+  concurrency: number;
+  timeoutMs: number;
+  retries: number;
+  userAgent: string;
+  verbose: boolean;
+  overwriteLlms: boolean;
+  render: boolean;
+}
+
+interface ScrapeResult {
+  markdown: string;
+  clutterMarkdown: string;
+  llmsMarkdown: string;
+  llmsFullMarkdown: string;
+}
+
+const DEFAULT_OPTIONS: CliOptions = {
+  outDir: ".docs",
+  concurrency: 4,
+  timeoutMs: 15_000,
+  retries: 2,
+  userAgent: "aidocs-scraper/1.0",
+  verbose: false,
+  overwriteLlms: false,
+  render: true,
+};
+
+const CLUTTER_SELECTORS = [
+  "nav",
+  "header",
+  "footer",
+  "script",
+  "style",
+  "iframe",
+  "svg",
+  "noscript",
+  "template",
+  "form",
+  "button",
+  "input",
+  "[aria-label='skip to content']",
+];
+
+const turndownService = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  codeBlockStyle: "fenced",
+});
+
+const argv = process.argv.slice(2);
+const LINE_SPLIT_REGEX = /\r?\n/;
+
+function parseArgs(args: string[]): CliOptions {
+  const opts: CliOptions = { ...DEFAULT_OPTIONS };
+
+  const iterator = args[Symbol.iterator]();
+  const positionalArgs: string[] = [];
+  const consumeNext = (valueFromEq: string | undefined): string | undefined => {
+    if (valueFromEq) {
+      return valueFromEq;
+    }
+    const next = iterator.next();
+    return next.done ? undefined : next.value;
+  };
+
+  const handlers: Record<string, (valueFromEq: string | undefined) => void> = {
+    "--url": (valueFromEq) => {
+      opts.url = consumeNext(valueFromEq);
+    },
+    "--urls": (valueFromEq) => {
+      opts.urlsFile = consumeNext(valueFromEq);
+    },
+    "--outDir": (valueFromEq) => {
+      opts.outDir = consumeNext(valueFromEq) ?? DEFAULT_OPTIONS.outDir;
+    },
+    "--concurrency": (valueFromEq) => {
+      const raw = consumeNext(valueFromEq);
+      opts.concurrency = parsePositiveInt(raw, DEFAULT_OPTIONS.concurrency);
+    },
+    "--timeout": (valueFromEq) => {
+      const raw = consumeNext(valueFromEq);
+      opts.timeoutMs = parsePositiveInt(raw, DEFAULT_OPTIONS.timeoutMs);
+    },
+    "--retries": (valueFromEq) => {
+      const raw = consumeNext(valueFromEq);
+      opts.retries = parsePositiveInt(raw, DEFAULT_OPTIONS.retries);
+    },
+    "--userAgent": (valueFromEq) => {
+      opts.userAgent = consumeNext(valueFromEq) ?? DEFAULT_OPTIONS.userAgent;
+    },
+    "--verbose": () => {
+      opts.verbose = true;
+    },
+    "--overwrite-llms": () => {
+      opts.overwriteLlms = true;
+    },
+    "--render": () => {
+      opts.render = true;
+    },
+    "--no-render": () => {
+      opts.render = false;
+    },
+    "--help": () => {
+      printHelp();
+      process.exit(0);
+    },
+  };
+
+  for (const arg of iterator) {
+    const [flag, valueFromEq] = arg.split("=", 2);
+    const handler = handlers[flag as keyof typeof handlers];
+    if (handler) {
+      handler(valueFromEq);
+    } else {
+      positionalArgs.push(arg);
+    }
+  }
+
+  if (!(opts.url || opts.urlsFile)) {
+    const firstArg = positionalArgs[0];
+    if (firstArg) {
+      try {
+        new URL(firstArg);
+        opts.url = firstArg;
+      } catch {
+        printHelp();
+        console.error(
+          `"${firstArg}" is not a valid URL. Provide --url or --urls <file>`
+        );
+        process.exit(1);
+      }
+    } else {
+      printHelp();
+      console.error("Provide --url or --urls <file>");
+      process.exit(1);
+    }
+  }
+
+  if (positionalArgs.length > 1) {
+    console.warn(
+      `Ignoring extra positional arguments: ${positionalArgs.slice(1).join(", ")}`
+    );
+  }
+
+  return opts;
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (!raw) {
+    return fallback;
+  }
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeSegment(segment: string): string {
+  const clean = segment.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "");
+  return clean.length > 0 ? clean.toLowerCase() : "index";
+}
+
+function toSnakeDomain(hostname: string): string {
+  return sanitizeSegment(hostname);
+}
+
+function buildOutputPaths(
+  targetUrl: string,
+  outDir: string
+): {
+  dir: string;
+  pagePath: string;
+  clutterPath: string;
+  llmsPath: string;
+  llmsFullPath: string;
+} {
+  const parsed = new URL(targetUrl);
+  const domainPart = toSnakeDomain(parsed.hostname);
+  const pathSegments = parsed.pathname
+    .split("/")
+    .filter(Boolean)
+    .map(sanitizeSegment);
+  const finalSegments = pathSegments.length > 0 ? pathSegments : ["root"];
+  const dir = path.join(outDir, domainPart, ...finalSegments);
+  return {
+    dir,
+    pagePath: path.join(dir, "page.md"),
+    clutterPath: path.join(dir, "clutter.md"),
+    llmsPath: path.join(dir, ".llms.md"),
+    llmsFullPath: path.join(dir, "llms-full.md"),
+  };
+}
+
+async function fetchWithTimeout(
+  targetUrl: string,
+  timeoutMs: number,
+  userAgent: string
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(targetUrl, {
+      headers: { "User-Agent": userAgent },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchWithRetries(
+  targetUrl: string,
+  options: Pick<CliOptions, "timeoutMs" | "retries" | "userAgent" | "verbose">
+): Promise<string> {
+  let attempt = 0;
+  let lastError: unknown;
+
+  while (attempt <= options.retries) {
+    try {
+      if (options.verbose) {
+        console.info(
+          `Fetching (${attempt + 1}/${options.retries + 1}): ${targetUrl}`
+        );
+      }
+      return await fetchWithTimeout(
+        targetUrl,
+        options.timeoutMs,
+        options.userAgent
+      );
+    } catch (error) {
+      lastError = error;
+      attempt += 1;
+      if (options.verbose) {
+        console.warn(
+          `Fetch attempt ${attempt} failed for ${targetUrl}: ${String(error)}`
+        );
+      }
+      if (attempt > options.retries) {
+        break;
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Failed to fetch URL");
+}
+
+function stripClutter(document: Document): {
+  cleanedHtml: string;
+  clutterHtml: string;
+} {
+  const removed: string[] = [];
+
+  for (const selector of CLUTTER_SELECTORS) {
+    const matches = document.querySelectorAll(selector);
+    for (const element of matches) {
+      const text = element.textContent?.trim();
+      if (text) {
+        removed.push(text);
+      }
+      element.remove();
+    }
+  }
+
+  const body = document.querySelector("main") ?? document.body;
+  const cleanedHtml = body?.innerHTML ?? document.body.innerHTML;
+  const clutterHtml =
+    removed.length > 0
+      ? `<ul>${removed.map((entry) => `<li>${entry}</li>`).join("")}</ul>`
+      : "";
+
+  return { cleanedHtml, clutterHtml };
+}
+
+function extractContent(html: string, targetUrl: string): ScrapeResult {
+  const domForReadability = new JSDOM(html, { url: targetUrl });
+  const reader = new Readability(domForReadability.window.document);
+  const article = reader.parse();
+
+  const domForCleaning = new JSDOM(html, { url: targetUrl });
+  const { cleanedHtml: fallbackHtml, clutterHtml } = stripClutter(
+    domForCleaning.window.document
+  );
+
+  const rawBodyHtml = domForReadability.window.document.body.innerHTML;
+  let mainHtml = article?.content;
+  if (!mainHtml || mainHtml.trim().length === 0) {
+    mainHtml =
+      fallbackHtml && fallbackHtml.trim().length > 0
+        ? fallbackHtml
+        : rawBodyHtml;
+  }
+  const title =
+    article?.title ?? domForCleaning.window.document.title ?? targetUrl;
+
+  const markdownBody = turndownService.turndown(mainHtml);
+  const clutterMarkdown = clutterHtml
+    ? turndownService.turndown(clutterHtml)
+    : "";
+  const llmsMarkdown = markdownBody;
+  const llmsFullMarkdown = turndownService.turndown(html);
+
+  const header = [
+    "---",
+    `Source: ${targetUrl}`,
+    `Fetched: ${new Date().toISOString()}`,
+    "---\n",
+    `# ${title}`,
+  ].join("\n");
+
+  return {
+    markdown: `${header}${markdownBody}\n`,
+    clutterMarkdown: clutterMarkdown ? `${header}${clutterMarkdown}\n` : "",
+    llmsMarkdown: `${header}${llmsMarkdown}\n`,
+    llmsFullMarkdown: `${header}${llmsFullMarkdown}\n`,
+  };
+}
+
+function hasMeaningfulText(html: string): boolean {
+  const dom = new JSDOM(html);
+  const bodyText =
+    dom.window.document.body.textContent?.replace(/\s+/g, "") ?? "";
+  return bodyText.length > 200;
+}
+
+async function renderWithPlaywright(
+  targetUrl: string,
+  options: Pick<CliOptions, "timeoutMs" | "userAgent" | "verbose">
+): Promise<string> {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({
+      userAgent: options.userAgent,
+    });
+    page.setDefaultNavigationTimeout(options.timeoutMs);
+    await page.goto(targetUrl, { waitUntil: "networkidle" });
+    await page.waitForTimeout(750);
+    const content = await page.content();
+    return content;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function getPageHtml(
+  targetUrl: string,
+  options: Pick<
+    CliOptions,
+    "timeoutMs" | "retries" | "userAgent" | "verbose" | "render"
+  >
+): Promise<string> {
+  const rawHtml = await fetchWithRetries(targetUrl, options);
+  if (!options.render || hasMeaningfulText(rawHtml)) {
+    return rawHtml;
+  }
+
+  if (options.verbose) {
+    console.info(`Falling back to headless render for ${targetUrl}`);
+  }
+
+  try {
+    const renderedHtml = await renderWithPlaywright(targetUrl, options);
+    if (hasMeaningfulText(renderedHtml)) {
+      return renderedHtml;
+    }
+    if (options.verbose) {
+      console.warn(
+        `Headless render returned insufficient content for ${targetUrl}`
+      );
+    }
+  } catch (error) {
+    if (options.verbose) {
+      console.warn(`Headless render failed for ${targetUrl}: ${String(error)}`);
+    }
+  }
+
+  return rawHtml;
+}
+
+async function ensureDir(dirPath: string): Promise<void> {
+  await mkdir(dirPath, { recursive: true });
+}
+
+async function writeOutputs(
+  targetUrl: string,
+  options: CliOptions,
+  result: ScrapeResult
+): Promise<void> {
+  const { dir, pagePath, clutterPath, llmsPath, llmsFullPath } =
+    buildOutputPaths(targetUrl, options.outDir);
+  await ensureDir(dir);
+
+  await writeFile(pagePath, result.markdown, "utf8");
+  if (result.clutterMarkdown) {
+    await writeFile(clutterPath, result.clutterMarkdown, "utf8");
+  }
+
+  if (options.overwriteLlms) {
+    await writeFile(llmsPath, result.llmsMarkdown, "utf8");
+    await writeFile(llmsFullPath, result.llmsFullMarkdown, "utf8");
+  } else {
+    const llmsExists = await fileExists(llmsPath);
+    const llmsFullExists = await fileExists(llmsFullPath);
+    if (options.verbose && (llmsExists || llmsFullExists)) {
+      console.info(`Skipped existing llms files in ${dir}`);
+    }
+  }
+}
+
+async function loadUrls(opts: CliOptions): Promise<string[]> {
+  const urls: string[] = [];
+
+  if (opts.url) {
+    urls.push(opts.url);
+  }
+
+  if (opts.urlsFile) {
+    const content = await readFile(opts.urlsFile, "utf8");
+    const lines = content
+      .split(LINE_SPLIT_REGEX)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+    urls.push(...lines);
+  }
+
+  const unique = Array.from(new Set(urls));
+  if (unique.length === 0) {
+    throw new Error("No URLs provided to scrape");
+  }
+  return unique;
+}
+
+async function scrapeOne(
+  targetUrl: string,
+  options: CliOptions
+): Promise<void> {
+  const html = await getPageHtml(targetUrl, {
+    timeoutMs: options.timeoutMs,
+    retries: options.retries,
+    userAgent: options.userAgent,
+    verbose: options.verbose,
+    render: options.render,
+  });
+  const result = extractContent(html, targetUrl);
+  await writeOutputs(targetUrl, options, result);
+  console.info(`Saved ${targetUrl}`);
+}
+
+async function runWithConcurrency(
+  urls: string[],
+  options: CliOptions
+): Promise<void> {
+  const queue = [...urls];
+  const workers: Promise<void>[] = [];
+
+  const worker = async (): Promise<void> => {
+    while (queue.length > 0) {
+      const nextUrl = queue.shift();
+      if (!nextUrl) {
+        return;
+      }
+      try {
+        await scrapeOne(nextUrl, options);
+      } catch (error) {
+        console.error(`Failed ${nextUrl}: ${String(error)}`);
+      }
+    }
+  };
+
+  const workerCount = Math.min(options.concurrency, queue.length);
+  for (let i = 0; i < workerCount; i += 1) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+}
+
+function printHelp(): void {
+  const lines = [
+    "Usage: bun run index.ts --url <url> [options]",
+    "Options:",
+    "  --url <url>            Single URL to scrape",
+    "  --urls <file>          File containing URLs (one per line, # for comments)",
+    "  --outDir <path>        Output directory (default .docs)",
+    "  --concurrency <n>      Parallel workers (default 4)",
+    "  --timeout <ms>         Fetch timeout in ms (default 15000)",
+    "  --retries <n>          Retry attempts (default 2)",
+    "  --userAgent <string>   Custom User-Agent header",
+    "  --verbose              Verbose logging",
+    "  --overwrite-llms       Overwrite .llms.md and llms-full.md outputs",
+    "  --no-render            Skip headless rendering fallback for SPAs",
+    "  --help                 Show this help",
+  ];
+  console.info(lines.join("\n"));
+}
+
+async function main(): Promise<void> {
+  try {
+    const options = parseArgs(argv);
+    const urls = await loadUrls(options);
+    await runWithConcurrency(urls, options);
+  } catch (error) {
+    console.error(String(error));
+    process.exitCode = 1;
+  }
+}
+
+main();
