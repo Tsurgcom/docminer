@@ -1,4 +1,5 @@
 import { LINE_SPLIT_REGEX } from "./constants";
+import { logger } from "./logger";
 import { fetchWithTimeout } from "./network";
 import type { CliOptions, RobotsPolicy } from "./types";
 
@@ -159,16 +160,12 @@ export async function loadRobotsPolicy(
       options.timeoutMs,
       options.userAgent
     );
-    if (options.verbose) {
-      console.info(`Loaded robots.txt from ${robotsUrl}`);
-    }
+    logger.debug(`Loaded robots.txt from ${robotsUrl}`);
     return parseRobotsTxt(text, options.userAgent);
   } catch (error) {
-    if (options.verbose) {
-      console.warn(
-        `Could not load robots.txt from ${robotsUrl}: ${String(error)}`
-      );
-    }
+    logger.debug(
+      `Could not load robots.txt from ${robotsUrl}: ${String(error)}`
+    );
     return buildAllowAllPolicy();
   }
 }

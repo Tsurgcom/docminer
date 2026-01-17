@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { LINE_SPLIT_REGEX } from "./constants";
+import { logger } from "./logger";
 import type { CliOptions, ScrapeResult } from "./types";
 import { buildOutputPaths, ensureDir, fileExists } from "./utils";
 
@@ -23,8 +24,8 @@ export async function writeOutputs(
   } else {
     const llmsExists = await fileExists(llmsPath);
     const llmsFullExists = await fileExists(llmsFullPath);
-    if (options.verbose && (llmsExists || llmsFullExists)) {
-      console.info(`Skipped existing llms files in ${dir}`);
+    if (llmsExists || llmsFullExists) {
+      logger.logSkipped(`llms files already exist in ${dir}`);
     }
   }
 }

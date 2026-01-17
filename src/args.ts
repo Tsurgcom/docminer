@@ -1,4 +1,5 @@
 import { DEFAULT_OPTIONS } from "./constants";
+import { logger } from "./logger";
 import type { CliOptions } from "./types";
 import { parsePositiveInt } from "./utils";
 
@@ -139,10 +140,10 @@ export function parseArgs(args: string[]): ParseResult {
     };
 
     const warnExtraArgs = (extras: string[]): void => {
-      if (!opts.verbose || extras.length === 0) {
+      if (extras.length === 0) {
         return;
       }
-      console.warn(`Ignoring extra positional arguments: ${extras.join(", ")}`);
+      logger.warn(`Ignoring extra positional arguments: ${extras.join(", ")}`);
     };
 
     const ensureValidUrl = (value: string, errorMessage: string): string => {

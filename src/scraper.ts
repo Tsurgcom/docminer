@@ -2,6 +2,7 @@ import { JSDOM } from "jsdom";
 import { extractContent } from "./content";
 import { loadUrls, writeOutputs } from "./io";
 import { extractLinksFromDom, rewriteLinksInResult } from "./links";
+import { logger } from "./logger";
 import { getPageHtml } from "./network";
 import { buildAllowAllPolicy, loadRobotsPolicy } from "./robots";
 import type { CliOptions, CrawlQueueItem } from "./types";
@@ -27,7 +28,7 @@ export async function scrapeOne(
     knownUrls
   );
   await writeOutputs(targetUrl, options, rewritten);
-  console.info(`Saved ${targetUrl}`);
+  logger.logPageSaved(targetUrl);
 }
 
 export async function runWithConcurrency(
@@ -39,6 +40,9 @@ export async function runWithConcurrency(
     queue.map((candidate) => normalizeForQueue(new URL(candidate)))
   );
   const workers: Promise<void>[] = [];
+  let processed = 0;
+
+  logger.startProgress(queue.length);
 
   const worker = async (): Promise<void> => {
     while (queue.length > 0) {
@@ -47,9 +51,14 @@ export async function runWithConcurrency(
         return;
       }
       try {
+        logger.updateProgress(processed, nextUrl);
         await scrapeOne(nextUrl, options, knownUrls);
+        processed += 1;
+        logger.incrementProgress(nextUrl);
       } catch (error) {
-        console.error(`Failed ${nextUrl}: ${String(error)}`);
+        processed += 1;
+        logger.recordFailure();
+        logger.error(`Failed ${nextUrl}: ${String(error)}`);
       }
     }
   };
@@ -60,6 +69,7 @@ export async function runWithConcurrency(
   }
 
   await Promise.all(workers);
+  logger.endProgress();
 }
 
 export async function crawlSite(
@@ -71,6 +81,15 @@ export async function crawlSite(
   const scopePathPrefix = start.pathname.endsWith("/")
     ? start.pathname
     : `${start.pathname}`;
+
+  logger.logCrawlStart(startUrl, {
+    maxDepth: options.maxDepth,
+    maxPages: options.maxPages,
+    delay: `${options.delayMs}ms`,
+    concurrency: options.concurrency,
+    respectRobots: options.respectRobots,
+  });
+
   const robotsPolicy = options.respectRobots
     ? await loadRobotsPolicy(start, {
         timeoutMs: options.timeoutMs,
@@ -113,6 +132,11 @@ export async function crawlSite(
   let activeWorkers = 0;
   const knownUrls = new Set<string>([normalizeForQueue(start)]);
 
+  const getPendingCount = (): number => queue.length - queueIndex;
+  const getDynamicTotal = (): number => savedCount + getPendingCount();
+
+  logger.startProgress(getDynamicTotal());
+
   const processItem = async (item: CrawlQueueItem): Promise<string[]> => {
     const normalized = normalizeForQueue(new URL(item.url));
     if (visited.has(normalized)) {
@@ -122,11 +146,12 @@ export async function crawlSite(
 
     const currentUrl = new URL(item.url);
     if (!robotsPolicy.isAllowed(currentUrl.pathname)) {
-      console.info(`Blocked by robots.txt: ${currentUrl.toString()}`);
+      logger.logBlocked(currentUrl.toString(), "robots.txt");
       return [];
     }
 
     await rateLimit();
+    logger.updateProgress(savedCount, currentUrl.toString(), getDynamicTotal());
 
     let html: string;
     try {
@@ -138,9 +163,10 @@ export async function crawlSite(
         render: options.render,
       });
     } catch (error) {
-      const reason = `Failed ${currentUrl.toString()}: ${String(error)}`;
+      const reason = `${currentUrl.toString()}: ${String(error)}`;
       failures.push(reason);
-      console.error(reason);
+      logger.recordFailure();
+      logger.error(`Failed ${reason}`);
       return [];
     }
 
@@ -163,7 +189,8 @@ export async function crawlSite(
     );
     await writeOutputs(currentUrl.toString(), options, rewritten);
     savedCount += 1;
-    console.info(`Saved ${currentUrl.toString()} (depth ${item.depth})`);
+    logger.updateProgress(savedCount, currentUrl.toString(), getDynamicTotal());
+    logger.logPageSaved(currentUrl.toString(), item.depth);
 
     if (!canGoDeeper) {
       return [];
@@ -182,8 +209,9 @@ export async function crawlSite(
   };
 
   const enqueueLinks = (links: string[], parentDepth: number): void => {
+    let added = 0;
     for (const link of links) {
-      const pending = queue.length - queueIndex;
+      const pending = getPendingCount();
       if (savedCount + pending >= options.maxPages) {
         break;
       }
@@ -193,6 +221,11 @@ export async function crawlSite(
       }
       knownUrls.add(normalizedLink);
       queue.push({ url: link, depth: parentDepth + 1 });
+      added += 1;
+    }
+    // Update progress total when new links are discovered
+    if (added > 0) {
+      logger.setProgressTotal(getDynamicTotal());
     }
   };
 
@@ -227,15 +260,14 @@ export async function crawlSite(
   }
   await Promise.all(workers);
 
-  console.info(
-    `Crawl finished. Saved ${savedCount} page(s), skipped ${visited.size - savedCount} item(s).`
-  );
-  if (failures.length > 0) {
-    console.warn(`Failures (${failures.length}):`);
-    for (const failure of failures) {
-      console.warn(` - ${failure}`);
-    }
+  logger.endProgress();
+
+  const skipped = visited.size - savedCount;
+  if (skipped > 0) {
+    logger.info(`Skipped ${skipped} duplicate/visited URL(s)`);
   }
+
+  logger.printFailureSummary(failures);
 }
 
 export async function runCliFlow(options: CliOptions): Promise<void> {

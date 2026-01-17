@@ -1,3 +1,4 @@
+import { logger } from "./logger";
 import type { CliOptions } from "./types";
 
 export async function fetchWithTimeout(
@@ -30,14 +31,11 @@ export async function fetchWithRetries(
 ): Promise<string> {
   let attempt = 0;
   let lastError: unknown;
+  const maxAttempts = options.retries + 1;
 
   while (attempt <= options.retries) {
     try {
-      if (options.verbose) {
-        console.info(
-          `Fetching (${attempt + 1}/${options.retries + 1}): ${targetUrl}`
-        );
-      }
+      logger.logFetch(targetUrl, attempt + 1, maxAttempts);
       return await fetchWithTimeout(
         targetUrl,
         options.timeoutMs,
@@ -46,11 +44,7 @@ export async function fetchWithRetries(
     } catch (error) {
       lastError = error;
       attempt += 1;
-      if (options.verbose) {
-        console.warn(
-          `Fetch attempt ${attempt} failed for ${targetUrl}: ${String(error)}`
-        );
-      }
+      logger.logFetchError(targetUrl, attempt, error);
       if (attempt > options.retries) {
         break;
       }
@@ -102,24 +96,18 @@ export async function getPageHtml(
     return rawHtml;
   }
 
-  if (options.verbose) {
-    console.info(`Falling back to headless render for ${targetUrl}`);
-  }
+  logger.logFallback(`Using headless render for ${targetUrl}`);
 
   try {
     const renderedHtml = await renderWithPlaywright(targetUrl, options);
     if (hasMeaningfulText(renderedHtml)) {
       return renderedHtml;
     }
-    if (options.verbose) {
-      console.warn(
-        `Headless render returned insufficient content for ${targetUrl}`
-      );
-    }
+    logger.debug(
+      `Headless render returned insufficient content for ${targetUrl}`
+    );
   } catch (error) {
-    if (options.verbose) {
-      console.warn(`Headless render failed for ${targetUrl}: ${String(error)}`);
-    }
+    logger.debug(`Headless render failed for ${targetUrl}: ${String(error)}`);
   }
 
   return rawHtml;
