@@ -46,8 +46,15 @@ interface ProgressState {
   isActive: boolean;
 }
 
-const PROGRESS_BAR_WIDTH = 30;
-const MIN_TERMINAL_WIDTH = 80;
+// Minimum widths for different display modes
+const MIN_TERMINAL_WIDTH = 80; // Default terminal width fallback
+const MIN_WIDTH_FULL = 60; // Full two-line display
+const MIN_WIDTH_COMPACT = 40; // Compact single-line display
+const MIN_WIDTH_MINIMAL = 20; // Minimal bar only
+
+// ANSI escape sequence pattern for stripping colors
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Required for ANSI stripping
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 
 const levelStyles: Record<LogLevel, { color: string; prefix: string }> = {
   debug: { color: ANSI.gray, prefix: "DEBUG" },
@@ -60,7 +67,7 @@ const levelStyles: Record<LogLevel, { color: string; prefix: string }> = {
 class Logger {
   private config: LoggerConfig = { verbose: false };
   private progress: ProgressState | null = null;
-  private lastProgressLine = "";
+  private progressLineCount = 0; // Number of lines used by progress display
   private readonly isTerminal = process.stdout.isTTY ?? false;
   private signalHandlerRegistered = false;
 
@@ -77,7 +84,7 @@ class Logger {
     }
 
     const cleanup = (): void => {
-      this.clearProgressLine();
+      this.clearProgressLines();
       if (this.isTerminal) {
         process.stdout.write(ANSI.showCursor);
       }
@@ -128,15 +135,23 @@ class Logger {
     return process.stdout.columns ?? MIN_TERMINAL_WIDTH;
   }
 
-  private clearProgressLine(): void {
-    if (this.isTerminal && this.lastProgressLine) {
-      process.stdout.write(`${ANSI.cursorToStart}${ANSI.clearLine}`);
-      this.lastProgressLine = "";
+  private clearProgressLines(): void {
+    if (!this.isTerminal || this.progressLineCount === 0) {
+      return;
     }
+
+    // Clear all progress lines from bottom to top
+    for (let i = 0; i < this.progressLineCount; i++) {
+      process.stdout.write(`${ANSI.cursorToStart}${ANSI.clearLine}`);
+      if (i < this.progressLineCount - 1) {
+        process.stdout.write(ANSI.cursorUp);
+      }
+    }
+    this.progressLineCount = 0;
   }
 
   private writeLog(level: LogLevel, message: string): void {
-    this.clearProgressLine();
+    this.clearProgressLines();
     const formatted = this.formatMessage(level, message);
 
     if (level === "error") {
@@ -251,7 +266,7 @@ class Logger {
    * Complete and remove the progress bar.
    */
   endProgress(): void {
-    this.clearProgressLine();
+    this.clearProgressLines();
 
     if (this.isTerminal) {
       process.stdout.write(ANSI.showCursor);
@@ -281,29 +296,143 @@ class Logger {
       return;
     }
 
+    // Clear previous progress lines first
+    this.clearProgressLines();
+
+    const termWidth = this.getTerminalWidth();
     const { current, total, currentUrl, failures } = this.progress;
     const percent = total > 0 ? Math.round((current / total) * 100) : 0;
-    const filled = Math.round((current / total) * PROGRESS_BAR_WIDTH);
-    const empty = PROGRESS_BAR_WIDTH - filled;
-
-    const bar = `${ANSI.green}${"█".repeat(filled)}${ANSI.gray}${"░".repeat(empty)}${ANSI.reset}`;
-    const stats = `${current}/${total}`;
-    const failureText =
-      failures > 0 ? ` ${ANSI.red}(${failures} failed)${ANSI.reset}` : "";
-
     const elapsed = this.formatDuration(Date.now() - this.progress.startTime);
     const eta = this.calculateEta();
 
-    // Truncate URL to fit terminal
-    const termWidth = this.getTerminalWidth();
-    const fixedPartLength = 60; // Approximate length of fixed parts
-    const maxUrlLength = Math.max(20, termWidth - fixedPartLength);
-    const displayUrl = this.truncateUrl(currentUrl, maxUrlLength);
+    // Different display modes based on terminal width
+    if (termWidth >= MIN_WIDTH_FULL) {
+      this.renderFullProgress(
+        termWidth,
+        current,
+        total,
+        percent,
+        failures,
+        elapsed,
+        eta,
+        currentUrl
+      );
+    } else if (termWidth >= MIN_WIDTH_COMPACT) {
+      this.renderCompactProgress(termWidth, current, total, percent, elapsed);
+    } else if (termWidth >= MIN_WIDTH_MINIMAL) {
+      this.renderMinimalProgress(termWidth, percent);
+    }
+    // Skip rendering entirely if terminal is too narrow (< MIN_WIDTH_MINIMAL)
+  }
 
-    const progressLine = `${ANSI.cursorToStart}${ANSI.clearLine}${bar} ${ANSI.bold}${percent}%${ANSI.reset} ${ANSI.dim}(${stats})${ANSI.reset}${failureText} ${ANSI.dim}${elapsed}${eta ? ` ETA: ${eta}` : ""}${ANSI.reset} ${ANSI.cyan}${displayUrl}${ANSI.reset}`;
+  /**
+   * Full two-line progress display for wide terminals.
+   * Line 1: Stats, elapsed, ETA, failures, URL
+   * Line 2: Full-width progress bar with percentage
+   */
+  private renderFullProgress(
+    termWidth: number,
+    current: number,
+    total: number,
+    percent: number,
+    failures: number,
+    elapsed: string,
+    eta: string,
+    currentUrl: string
+  ): void {
+    // Build info line components
+    const stats = `${current}/${total}`;
+    const failureText =
+      failures > 0 ? ` ${ANSI.red}✗${failures}${ANSI.reset}` : "";
+    const etaText = eta ? ` ${ANSI.dim}ETA: ${eta}${ANSI.reset}` : "";
+    const timeInfo = `${ANSI.dim}${elapsed}${ANSI.reset}${etaText}`;
 
-    this.lastProgressLine = progressLine;
-    process.stdout.write(progressLine);
+    // Calculate space for URL (info line)
+    const infoPrefix = `${stats}${failureText} ${elapsed}${eta ? ` ETA: ${eta}` : ""} `;
+    const infoPrefixLen = this.stripAnsi(infoPrefix).length;
+    const maxUrlLen = Math.max(10, termWidth - infoPrefixLen - 1);
+    const displayUrl = this.truncateUrl(currentUrl, maxUrlLen);
+
+    // Info line
+    const infoLine = `${ANSI.dim}(${stats})${ANSI.reset}${failureText} ${timeInfo} ${ANSI.cyan}${displayUrl}${ANSI.reset}`;
+
+    // Progress bar line - stretches to fill terminal width
+    // Format: [████████████████░░░░░░░░░░░░░░] 100%
+    const percentText = `${percent}%`;
+    const percentWidth = percentText.length;
+    const bracketSpace = 2; // [ and ]
+    const spaceBetween = 1; // space between bar and percent
+    const barWidth = Math.max(
+      10,
+      termWidth - percentWidth - bracketSpace - spaceBetween
+    );
+
+    const filledWidth = Math.round((percent / 100) * barWidth);
+    const emptyWidth = barWidth - filledWidth;
+
+    const barLine = `${ANSI.dim}[${ANSI.reset}${ANSI.green}${"█".repeat(filledWidth)}${ANSI.gray}${"░".repeat(emptyWidth)}${ANSI.reset}${ANSI.dim}]${ANSI.reset} ${ANSI.bold}${percentText}${ANSI.reset}`;
+
+    // Write both lines
+    process.stdout.write(`${infoLine}\n${barLine}`);
+    this.progressLineCount = 2;
+  }
+
+  /**
+   * Compact single-line progress for medium terminals.
+   * Shows: [████░░░░] 50% (5/10) 1m 30s
+   */
+  private renderCompactProgress(
+    termWidth: number,
+    current: number,
+    total: number,
+    percent: number,
+    elapsed: string
+  ): void {
+    const stats = `(${current}/${total})`;
+    const percentText = `${percent}%`;
+    const suffix = ` ${percentText} ${stats} ${elapsed}`;
+    const suffixLen = this.stripAnsi(suffix).length;
+
+    const bracketSpace = 2;
+    const barWidth = Math.max(8, termWidth - suffixLen - bracketSpace);
+
+    const filledWidth = Math.round((percent / 100) * barWidth);
+    const emptyWidth = barWidth - filledWidth;
+
+    const line = `${ANSI.dim}[${ANSI.reset}${ANSI.green}${"█".repeat(filledWidth)}${ANSI.gray}${"░".repeat(emptyWidth)}${ANSI.reset}${ANSI.dim}]${ANSI.reset} ${ANSI.bold}${percentText}${ANSI.reset} ${ANSI.dim}${stats} ${elapsed}${ANSI.reset}`;
+
+    process.stdout.write(line);
+    this.progressLineCount = 1;
+  }
+
+  /**
+   * Minimal progress for very small terminals.
+   * Shows just: [████░░░░] 50%
+   */
+  private renderMinimalProgress(termWidth: number, percent: number): void {
+    const percentText = `${percent}%`;
+    const percentWidth = percentText.length;
+    const bracketSpace = 2;
+    const spaceBetween = 1;
+    const barWidth = Math.max(
+      5,
+      termWidth - percentWidth - bracketSpace - spaceBetween
+    );
+
+    const filledWidth = Math.round((percent / 100) * barWidth);
+    const emptyWidth = barWidth - filledWidth;
+
+    const line = `${ANSI.dim}[${ANSI.reset}${ANSI.green}${"█".repeat(filledWidth)}${ANSI.gray}${"░".repeat(emptyWidth)}${ANSI.reset}${ANSI.dim}]${ANSI.reset} ${ANSI.bold}${percentText}${ANSI.reset}`;
+
+    process.stdout.write(line);
+    this.progressLineCount = 1;
+  }
+
+  /**
+   * Strip ANSI escape codes to get actual visible string length.
+   */
+  private stripAnsi(str: string): string {
+    return str.replace(ANSI_PATTERN, "");
   }
 
   private truncateUrl(url: string, maxLength: number): string {
