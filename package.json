@@ -2,6 +2,7 @@
   "name": "docminer",
   "version": "0.1.0",
   "description": "Generate markdown docs from URLs via CLI.",
+  "license": "MIT",
   "type": "module",
   "private": false,
   "bin": {
@@ -24,6 +25,15 @@
     "format": "bun x ultracite fix",
     "prepare": "bun run build"
   },
+  "keywords": [
+    "documentation",
+    "scraper",
+    "markdown",
+    "crawler",
+    "cli",
+    "docs",
+    "ai"
+  ],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=3.5.0"

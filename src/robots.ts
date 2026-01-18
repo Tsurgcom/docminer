@@ -36,6 +36,80 @@ export function selectAgentPolicy(
   return rules.get("*");
 }
 
+function createEvaluator(
+  allowRules: string[],
+  disallowRules: string[]
+): (pathname: string) => boolean {
+  return (pathname: string): boolean => {
+    let longestAllow = "";
+    let longestDisallow = "";
+    for (const rule of allowRules) {
+      if (pathname.startsWith(rule) && rule.length > longestAllow.length) {
+        longestAllow = rule;
+      }
+    }
+    for (const rule of disallowRules) {
+      if (pathname.startsWith(rule) && rule.length > longestDisallow.length) {
+        longestDisallow = rule;
+      }
+    }
+    if (longestAllow.length === 0 && longestDisallow.length === 0) {
+      return true;
+    }
+    return longestAllow.length >= longestDisallow.length;
+  };
+}
+
+function processRobotsLine(
+  directive: string,
+  value: string,
+  currentAgents: Set<string>,
+  _rules: Map<
+    string,
+    { allow: string[]; disallow: string[]; crawlDelayMs?: number }
+  >,
+  ensureEntry: (agent: string) => void,
+  applyToAgents: (
+    handler: (entry: {
+      allow: string[];
+      disallow: string[];
+      crawlDelayMs?: number;
+    }) => void
+  ) => void
+): void {
+  if (directive === "user-agent") {
+    const agent = value.toLowerCase();
+    currentAgents.clear();
+    currentAgents.add(agent);
+    ensureEntry(agent);
+    return;
+  }
+
+  if (directive === "allow" && value) {
+    applyToAgents((entry) => {
+      entry.allow.push(normalizeRulePath(value));
+    });
+    return;
+  }
+
+  if (directive === "disallow" && value) {
+    applyToAgents((entry) => {
+      entry.disallow.push(normalizeRulePath(value));
+    });
+    return;
+  }
+
+  if (directive === "crawl-delay") {
+    const delaySeconds = Number.parseFloat(value);
+    if (Number.isFinite(delaySeconds)) {
+      const delayMs = delaySeconds * 1000;
+      applyToAgents((entry) => {
+        entry.crawlDelayMs = delayMs;
+      });
+    }
+  }
+}
+
 export function parseRobotsTxt(
   robotsText: string,
   userAgent: string
@@ -44,7 +118,7 @@ export function parseRobotsTxt(
     string,
     { allow: string[]; disallow: string[]; crawlDelayMs?: number }
   >();
-  let currentAgents = new Set<string>();
+  const currentAgents = new Set<string>();
 
   const ensureEntry = (agent: string): void => {
     if (!rules.has(agent)) {
@@ -81,40 +155,14 @@ export function parseRobotsTxt(
     const directive = directiveRaw.trim().toLowerCase();
     const value = valueRaw.trim();
 
-    if (directive === "user-agent") {
-      const agent = value.toLowerCase();
-      currentAgents = new Set([agent]);
-      ensureEntry(agent);
-      continue;
-    }
-
-    if (directive === "allow") {
-      if (value) {
-        applyToAgents((entry) => {
-          entry.allow.push(normalizeRulePath(value));
-        });
-      }
-      continue;
-    }
-
-    if (directive === "disallow") {
-      if (value) {
-        applyToAgents((entry) => {
-          entry.disallow.push(normalizeRulePath(value));
-        });
-      }
-      continue;
-    }
-
-    if (directive === "crawl-delay") {
-      const delaySeconds = Number.parseFloat(value);
-      if (Number.isFinite(delaySeconds)) {
-        const delayMs = delaySeconds * 1000;
-        applyToAgents((entry) => {
-          entry.crawlDelayMs = delayMs;
-        });
-      }
-    }
+    processRobotsLine(
+      directive,
+      value,
+      currentAgents,
+      rules,
+      ensureEntry,
+      applyToAgents
+    );
   }
 
   const policy = selectAgentPolicy(rules, userAgent);
@@ -122,32 +170,8 @@ export function parseRobotsTxt(
     return buildAllowAllPolicy();
   }
 
-  const allowRules = policy.allow;
-  const disallowRules = policy.disallow;
-  const evaluate = (pathname: string): boolean => {
-    let longestAllow = "";
-    let longestDisallow = "";
-    for (const rule of allowRules) {
-      if (pathname.startsWith(rule) && rule.length > longestAllow.length) {
-        longestAllow = rule;
-      }
-    }
-    for (const rule of disallowRules) {
-      if (pathname.startsWith(rule) && rule.length > longestDisallow.length) {
-        longestDisallow = rule;
-      }
-    }
-    if (longestAllow.length === 0 && longestDisallow.length === 0) {
-      return true;
-    }
-    if (longestAllow.length >= longestDisallow.length) {
-      return true;
-    }
-    return false;
-  };
-
   return {
-    isAllowed: evaluate,
+    isAllowed: createEvaluator(policy.allow, policy.disallow),
     crawlDelayMs: policy.crawlDelayMs,
     source: "robots.txt",
   };
