@@ -1,4 +1,5 @@
 import { JSDOM } from "jsdom";
+import { BloomFilter, type KnownUrlLookup } from "../bloom";
 import { extractContent } from "../content";
 import { writeOutputs } from "../io";
 import {
@@ -18,7 +19,7 @@ import type {
 
 declare let self: Worker;
 
-const knownUrls = new Set<string>();
+const emptyKnownUrlFilter: KnownUrlLookup = { has: () => false };
 let workerId = "";
 let workerKind: WorkerKind = "hybrid";
 let options: WorkerOptions | null = null;
@@ -27,6 +28,7 @@ let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 let activeJob: JobPayload | null = null;
 let pendingRenderJob: JobPayload | null = null;
 let stopRequested = false;
+let knownUrlFilter: KnownUrlLookup = emptyKnownUrlFilter;
 
 const FRONTMATTER_REGEX = /^---[\s\S]*?---\s*/;
 const MIN_MARKDOWN_CHARS = 200;
@@ -80,14 +82,6 @@ const waitUntil = async (
   }
 };
 
-const addKnownUrls = (urls: string[]): void => {
-  for (const url of urls) {
-    if (url) {
-      knownUrls.add(url);
-    }
-  }
-};
-
 const requestNext = (): void => {
   if (stopRequested) {
     post({ type: "stopped", workerId, reason: "stop" });
@@ -137,7 +131,7 @@ const buildResult = async (
     result,
     job.url,
     { ...workerOptions, verbose: false },
-    knownUrls,
+    knownUrlFilter,
     linkBaseUrl.toString(),
     linkHints,
     crawlContext?.scopePathPrefix
@@ -155,7 +149,6 @@ const runJob = async (job: JobPayload): Promise<void> => {
   clearInactivityTimer();
 
   try {
-    knownUrls.add(normalizeForQueue(new URL(job.url)));
     await waitUntil(job.waitUntilMs, job);
     post({
       type: "progress",
@@ -311,13 +304,11 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
     workerKind = message.kind;
     options = message.options;
     inactivityMs = message.inactivityMs;
+    knownUrlFilter = message.knownUrlFilter
+      ? new BloomFilter(message.knownUrlFilter)
+      : emptyKnownUrlFilter;
     post({ type: "ready", workerId, kind: workerKind });
     requestNext();
-    return;
-  }
-
-  if (message.type === "knownUrls") {
-    addKnownUrls(message.urls);
     return;
   }
 

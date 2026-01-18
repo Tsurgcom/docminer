@@ -1,3 +1,4 @@
+import { BloomFilter, type BloomFilterInit } from "./bloom";
 import { logger } from "./logger";
 import { buildAllowAllPolicy, loadRobotsPolicy } from "./robots";
 import type { CliOptions, RobotsPolicy } from "./types";
@@ -32,11 +33,54 @@ interface WorkerPool {
   spawnWorker: (kind: WorkerKind) => WorkerState;
   stopWorker: (workerId: string) => void;
   stopAll: () => Promise<void>;
-  broadcastKnownUrls: (urls: string[]) => void;
+}
+
+interface JobTiming {
+  kind: WorkerKind;
+  assignedAtMs: number;
+  activeStartAtMs: number | null;
+}
+
+interface AutoScaleMetrics {
+  markdownActiveMs: number;
+  hybridActiveMs: number;
+  markdownUnavailableRate: number;
+}
+
+interface AutoScaleQueues {
+  pendingMarkdown: number;
+  pendingHybrid: number;
+}
+
+interface AutoScaleConfig {
+  pool: WorkerPool;
+  idleMarkdown: Set<string>;
+  idleHybrid: Set<string>;
+  maxTotalWorkers: number;
+  getPendingCounts: () => AutoScaleQueues;
+  getMetrics: () => AutoScaleMetrics;
+  isDone: () => boolean;
+  label: string;
 }
 
 const MIN_TOTAL_WORKERS = 2;
+const MIN_WORKERS_PER_KIND = 1;
 const WORKER_INACTIVITY_MS = 60_000;
+const AUTOSCALE_INTERVAL_MS = 1000;
+const AUTOSCALE_TARGET_DRAIN_MS = 15_000;
+const MAX_SPAWN_PER_TICK = 4;
+const MAX_STOP_PER_TICK = 4;
+const EWMA_ALPHA = 0.2;
+const DEFAULT_MARKDOWN_ACTIVE_MS = 600;
+const DEFAULT_HYBRID_ACTIVE_MS = 2000;
+const DEFAULT_MARKDOWN_UNAVAILABLE_RATE = 0.25;
+const BLOOM_BITS_PER_ITEM = 10;
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
+
+const updateEwma = (current: number, sample: number, alpha: number): number =>
+  Number.isFinite(sample) ? alpha * sample + (1 - alpha) * current : current;
 
 const createJobId = (): string => crypto.randomUUID();
 
@@ -46,9 +90,15 @@ const createWorkerOptions = (options: CliOptions): CliOptions => ({
   progress: false,
 });
 
+const createKnownUrlFilter = (
+  capacity: number
+): { filter: BloomFilter; init: BloomFilterInit } =>
+  BloomFilter.create(Math.max(1, capacity), BLOOM_BITS_PER_ITEM);
+
 const createWorkerPool = (
   options: CliOptions,
-  onMessage: (state: WorkerState, message: WorkerToMainMessage) => void
+  onMessage: (state: WorkerState, message: WorkerToMainMessage) => void,
+  knownUrlFilter: BloomFilterInit
 ): WorkerPool => {
   const workers = new Map<string, WorkerState>();
   const stopResolvers = new Map<string, () => void>();
@@ -86,7 +136,6 @@ const createWorkerPool = (
   ): message is MainToWorkerMessage =>
     message.type === "assign" ||
     message.type === "init" ||
-    message.type === "knownUrls" ||
     message.type === "renderWithPlaywright" ||
     message.type === "stop";
 
@@ -96,8 +145,6 @@ const createWorkerPool = (
         return `assign job=${message.job.jobId} url=${message.job.url} waitUntilMs=${message.job.waitUntilMs}`;
       case "init":
         return `init kind=${message.kind} inactivityMs=${message.inactivityMs}`;
-      case "knownUrls":
-        return `knownUrls count=${message.urls.length}`;
       case "renderWithPlaywright":
         return `renderWithPlaywright job=${message.jobId}`;
       case "stop":
@@ -211,6 +258,7 @@ const createWorkerPool = (
       kind,
       options: workerOptions,
       inactivityMs: WORKER_INACTIVITY_MS,
+      knownUrlFilter,
     };
     logOutgoing(state, initMessage);
     worker.postMessage(initMessage);
@@ -244,18 +292,7 @@ const createWorkerPool = (
     updateWorkerCounts();
   };
 
-  const broadcastKnownUrls = (urls: string[]): void => {
-    if (urls.length === 0) {
-      return;
-    }
-    for (const state of workers.values()) {
-      const knownMessage: MainToWorkerMessage = { type: "knownUrls", urls };
-      logOutgoing(state, knownMessage);
-      state.worker.postMessage(knownMessage);
-    }
-  };
-
-  return { workers, spawnWorker, stopWorker, stopAll, broadcastKnownUrls };
+  return { workers, spawnWorker, stopWorker, stopAll };
 };
 
 const computeWaitUntil = (
@@ -274,16 +311,377 @@ const computeWaitUntil = (
   return waitUntil;
 };
 
+const startAutoScaler = (config: AutoScaleConfig): (() => void) => {
+  let stopped = false;
+
+  const getPoolCounts = (): {
+    markdown: number;
+    hybrid: number;
+    inFlightMarkdown: number;
+    inFlightHybrid: number;
+  } => {
+    let markdown = 0;
+    let hybrid = 0;
+    let inFlightMarkdown = 0;
+    let inFlightHybrid = 0;
+    for (const state of config.pool.workers.values()) {
+      if (state.kind === "markdown") {
+        markdown += 1;
+        if (state.currentJobId) {
+          inFlightMarkdown += 1;
+        }
+      } else {
+        hybrid += 1;
+        if (state.currentJobId) {
+          inFlightHybrid += 1;
+        }
+      }
+    }
+    return { markdown, hybrid, inFlightMarkdown, inFlightHybrid };
+  };
+
+  const collectIdleIds = (idleSet: Set<string>): string[] => {
+    const ids: string[] = [];
+    for (const id of Array.from(idleSet)) {
+      const state = config.pool.workers.get(id);
+      if (!state) {
+        idleSet.delete(id);
+        continue;
+      }
+      if (!state.idle || state.stopping) {
+        idleSet.delete(id);
+        continue;
+      }
+      ids.push(id);
+    }
+    return ids;
+  };
+
+  const stopIdleWorker = (workerId: string, kind: WorkerKind): void => {
+    if (kind === "markdown") {
+      config.idleMarkdown.delete(workerId);
+    } else {
+      config.idleHybrid.delete(workerId);
+    }
+    config.pool.stopWorker(workerId);
+  };
+
+  type PoolCounts = ReturnType<typeof getPoolCounts>;
+  interface AutoScaleTargets {
+    desiredTotal: number;
+    desiredMarkdown: number;
+    desiredHybrid: number;
+  }
+  interface ScaleState {
+    markdownCount: number;
+    hybridCount: number;
+    markdownDiff: number;
+    hybridDiff: number;
+    spawnBudget: number;
+    stopBudget: number;
+  }
+
+  const computeTargets = (
+    pending: AutoScaleQueues,
+    counts: PoolCounts,
+    metrics: AutoScaleMetrics
+  ): AutoScaleTargets => {
+    const pendingTotal = pending.pendingMarkdown + pending.pendingHybrid;
+    const inFlightTotal = counts.inFlightMarkdown + counts.inFlightHybrid;
+    const hasWork = pendingTotal + inFlightTotal > 0;
+    const effectiveMarkdownRate = clamp(metrics.markdownUnavailableRate, 0, 1);
+    const safeMarkdownMs = Math.max(1, metrics.markdownActiveMs);
+    const safeHybridMs = Math.max(1, metrics.hybridActiveMs);
+    const markdownDemand = pending.pendingMarkdown + counts.inFlightMarkdown;
+    const hybridDemand =
+      pending.pendingHybrid +
+      counts.inFlightHybrid +
+      markdownDemand * effectiveMarkdownRate;
+    const markdownWorkMs = markdownDemand * safeMarkdownMs;
+    const hybridWorkMs = hybridDemand * safeHybridMs;
+    const totalWorkMs = markdownWorkMs + hybridWorkMs;
+
+    const desiredTotal = hasWork
+      ? clamp(
+          Math.ceil(totalWorkMs / AUTOSCALE_TARGET_DRAIN_MS),
+          MIN_TOTAL_WORKERS,
+          config.maxTotalWorkers
+        )
+      : MIN_TOTAL_WORKERS;
+
+    const desiredMarkdown =
+      totalWorkMs > 0
+        ? clamp(
+            Math.round((desiredTotal * markdownWorkMs) / totalWorkMs),
+            MIN_WORKERS_PER_KIND,
+            desiredTotal - MIN_WORKERS_PER_KIND
+          )
+        : clamp(
+            Math.round(desiredTotal / 2),
+            MIN_WORKERS_PER_KIND,
+            desiredTotal - MIN_WORKERS_PER_KIND
+          );
+
+    const desiredHybrid = Math.max(
+      MIN_WORKERS_PER_KIND,
+      desiredTotal - desiredMarkdown
+    );
+
+    return { desiredTotal, desiredMarkdown, desiredHybrid };
+  };
+
+  const createScaleState = (
+    counts: PoolCounts,
+    targets: AutoScaleTargets
+  ): ScaleState => ({
+    markdownCount: counts.markdown,
+    hybridCount: counts.hybrid,
+    markdownDiff: targets.desiredMarkdown - counts.markdown,
+    hybridDiff: targets.desiredHybrid - counts.hybrid,
+    spawnBudget: MAX_SPAWN_PER_TICK,
+    stopBudget: MAX_STOP_PER_TICK,
+  });
+
+  const pickSpawnKind = (
+    markdownDiff: number,
+    hybridDiff: number
+  ): WorkerKind | null => {
+    if (markdownDiff > 0 && hybridDiff > 0) {
+      return markdownDiff >= hybridDiff ? "markdown" : "hybrid";
+    }
+    if (markdownDiff > 0) {
+      return "markdown";
+    }
+    if (hybridDiff > 0) {
+      return "hybrid";
+    }
+    return null;
+  };
+
+  const shiftWorkers = (
+    fromKind: WorkerKind,
+    toKind: WorkerKind,
+    idleIds: string[],
+    requested: number,
+    state: ScaleState
+  ): number => {
+    if (requested <= 0 || state.spawnBudget <= 0 || state.stopBudget <= 0) {
+      return 0;
+    }
+    const allowed = Math.min(
+      requested,
+      idleIds.length,
+      state.spawnBudget,
+      state.stopBudget
+    );
+    let shifted = 0;
+    for (let i = 0; i < allowed; i += 1) {
+      const workerId = idleIds.shift();
+      if (!workerId) {
+        break;
+      }
+      stopIdleWorker(workerId, fromKind);
+      config.pool.spawnWorker(toKind);
+      state.spawnBudget -= 1;
+      state.stopBudget -= 1;
+      shifted += 1;
+    }
+    return shifted;
+  };
+
+  const rebalanceKinds = (
+    state: ScaleState,
+    idleMarkdownIds: string[],
+    idleHybridIds: string[]
+  ): void => {
+    if (state.markdownDiff > 0 && state.hybridDiff < 0) {
+      const requested = Math.min(state.markdownDiff, -state.hybridDiff);
+      const shifted = shiftWorkers(
+        "hybrid",
+        "markdown",
+        idleHybridIds,
+        requested,
+        state
+      );
+      if (shifted > 0) {
+        state.markdownCount += shifted;
+        state.hybridCount -= shifted;
+        state.markdownDiff -= shifted;
+        state.hybridDiff += shifted;
+      }
+      return;
+    }
+    if (state.markdownDiff < 0 && state.hybridDiff > 0) {
+      const requested = Math.min(-state.markdownDiff, state.hybridDiff);
+      const shifted = shiftWorkers(
+        "markdown",
+        "hybrid",
+        idleMarkdownIds,
+        requested,
+        state
+      );
+      if (shifted > 0) {
+        state.markdownCount -= shifted;
+        state.hybridCount += shifted;
+        state.markdownDiff += shifted;
+        state.hybridDiff -= shifted;
+      }
+    }
+  };
+
+  const scaleUpWorkers = (
+    state: ScaleState,
+    targets: AutoScaleTargets
+  ): void => {
+    const totalDiff =
+      targets.desiredTotal - (state.markdownCount + state.hybridCount);
+    if (totalDiff <= 0 || state.spawnBudget <= 0) {
+      return;
+    }
+    const spawnCount = Math.min(state.spawnBudget, totalDiff);
+    for (let i = 0; i < spawnCount; i += 1) {
+      const kind = pickSpawnKind(state.markdownDiff, state.hybridDiff);
+      if (!kind) {
+        break;
+      }
+      config.pool.spawnWorker(kind);
+      state.spawnBudget -= 1;
+      if (kind === "markdown") {
+        state.markdownCount += 1;
+        state.markdownDiff -= 1;
+      } else {
+        state.hybridCount += 1;
+        state.hybridDiff -= 1;
+      }
+    }
+  };
+
+  const stopWorkersFromKind = (
+    state: ScaleState,
+    idleIds: string[],
+    kind: WorkerKind,
+    requested: number
+  ): number => {
+    if (requested <= 0 || state.stopBudget <= 0) {
+      return 0;
+    }
+    const allowed = Math.min(requested, idleIds.length, state.stopBudget);
+    let stopped = 0;
+    for (let i = 0; i < allowed; i += 1) {
+      const workerId = idleIds.shift();
+      if (!workerId) {
+        break;
+      }
+      stopIdleWorker(workerId, kind);
+      state.stopBudget -= 1;
+      stopped += 1;
+    }
+    return stopped;
+  };
+
+  const scaleDownWorkers = (
+    state: ScaleState,
+    idleMarkdownIds: string[],
+    idleHybridIds: string[],
+    targets: AutoScaleTargets
+  ): void => {
+    const totalDiff =
+      targets.desiredTotal - (state.markdownCount + state.hybridCount);
+    if (totalDiff >= 0 || state.stopBudget <= 0) {
+      return;
+    }
+    let remainingStop = Math.min(state.stopBudget, -totalDiff);
+    if (state.markdownDiff < 0 && remainingStop > 0) {
+      const requested = Math.min(-state.markdownDiff, remainingStop);
+      const stopped = stopWorkersFromKind(
+        state,
+        idleMarkdownIds,
+        "markdown",
+        requested
+      );
+      if (stopped > 0) {
+        state.markdownCount -= stopped;
+        state.markdownDiff += stopped;
+        remainingStop -= stopped;
+      }
+    }
+    if (state.hybridDiff < 0 && remainingStop > 0) {
+      const requested = Math.min(-state.hybridDiff, remainingStop);
+      const stopped = stopWorkersFromKind(
+        state,
+        idleHybridIds,
+        "hybrid",
+        requested
+      );
+      if (stopped > 0) {
+        state.hybridCount -= stopped;
+        state.hybridDiff += stopped;
+      }
+    }
+  };
+
+  const logAutoScale = (
+    pending: AutoScaleQueues,
+    counts: PoolCounts,
+    metrics: AutoScaleMetrics,
+    targets: AutoScaleTargets
+  ): void => {
+    if (!logger.verbose) {
+      return;
+    }
+    logger.debug(
+      `${config.label} autoscale pending=md${pending.pendingMarkdown}/hy${pending.pendingHybrid} inFlight=md${counts.inFlightMarkdown}/hy${counts.inFlightHybrid} activeMs=md${Math.round(
+        metrics.markdownActiveMs
+      )}/hy${Math.round(
+        metrics.hybridActiveMs
+      )} unavailableRate=${metrics.markdownUnavailableRate.toFixed(
+        2
+      )} target=${targets.desiredTotal} (md ${targets.desiredMarkdown}, hy ${targets.desiredHybrid}) current=${counts.markdown + counts.hybrid} (md ${counts.markdown}, hy ${counts.hybrid})`
+    );
+  };
+
+  const tick = (): void => {
+    if (stopped || config.isDone()) {
+      return;
+    }
+
+    const counts = getPoolCounts();
+    const pending = config.getPendingCounts();
+    const metrics = config.getMetrics();
+    const targets = computeTargets(pending, counts, metrics);
+    const idleMarkdownIds = collectIdleIds(config.idleMarkdown);
+    const idleHybridIds = collectIdleIds(config.idleHybrid);
+
+    const state = createScaleState(counts, targets);
+    rebalanceKinds(state, idleMarkdownIds, idleHybridIds);
+    scaleUpWorkers(state, targets);
+    scaleDownWorkers(state, idleMarkdownIds, idleHybridIds, targets);
+    logAutoScale(pending, counts, metrics, targets);
+  };
+
+  tick();
+  const interval = setInterval(tick, AUTOSCALE_INTERVAL_MS);
+  return () => {
+    stopped = true;
+    clearInterval(interval);
+  };
+};
+
 export async function runScrapeWithWorkers(
   urls: string[],
   options: CliOptions
 ): Promise<void> {
   const totalUrls = urls.length;
-  const totalWorkers = Math.max(options.concurrency, MIN_TOTAL_WORKERS);
-  let markdownTarget = Math.max(1, totalWorkers - 1);
+  const { filter: knownUrlFilter, init: knownUrlFilterInit } =
+    createKnownUrlFilter(totalUrls);
+  const maxTotalWorkers = Math.max(options.concurrency, MIN_TOTAL_WORKERS);
   const markdownQueue: QueueItem[] = [];
   const hybridQueue: QueueItem[] = [];
   const jobMap = new Map<string, QueueItem>();
+  const jobTimings = new Map<string, JobTiming>();
+  let markdownActiveMs = DEFAULT_MARKDOWN_ACTIVE_MS;
+  let hybridActiveMs = DEFAULT_HYBRID_ACTIVE_MS;
+  let markdownUnavailableRate = DEFAULT_MARKDOWN_UNAVAILABLE_RATE;
   const knownUrls = new Set<string>();
   const idleMarkdown = new Set<string>();
   const idleHybrid = new Set<string>();
@@ -293,10 +691,12 @@ export async function runScrapeWithWorkers(
   let processedCount = 0;
   let doneResolve: (() => void) | null = null;
   let isDone = false;
+  let stopAutoScaler: (() => void) | null = null;
 
   for (const url of urls) {
     const normalized = normalizeForQueue(new URL(url));
     knownUrls.add(normalized);
+    knownUrlFilter.add(normalized);
     const jobId = createJobId();
     const item: QueueItem = {
       jobId,
@@ -311,6 +711,52 @@ export async function runScrapeWithWorkers(
   logger.startProgress(totalUrls);
 
   let pool: WorkerPool;
+
+  const recordAssignment = (state: WorkerState, jobId: string): void => {
+    jobTimings.set(jobId, {
+      kind: state.kind,
+      assignedAtMs: Date.now(),
+      activeStartAtMs: null,
+    });
+  };
+
+  const markActiveStart = (jobId: string): void => {
+    const timing = jobTimings.get(jobId);
+    if (!timing || timing.activeStartAtMs !== null) {
+      return;
+    }
+    timing.activeStartAtMs = Date.now();
+  };
+
+  const recordTerminal = (
+    jobId: string,
+    outcome: "completed" | "failed" | "markdownUnavailable"
+  ): void => {
+    const timing = jobTimings.get(jobId);
+    if (timing?.activeStartAtMs) {
+      const durationMs = Date.now() - timing.activeStartAtMs;
+      if (durationMs > 0) {
+        if (timing.kind === "markdown") {
+          markdownActiveMs = updateEwma(
+            markdownActiveMs,
+            durationMs,
+            EWMA_ALPHA
+          );
+        } else {
+          hybridActiveMs = updateEwma(hybridActiveMs, durationMs, EWMA_ALPHA);
+        }
+      }
+    }
+    if (timing?.kind === "markdown") {
+      const sample = outcome === "markdownUnavailable" ? 1 : 0;
+      markdownUnavailableRate = updateEwma(
+        markdownUnavailableRate,
+        sample,
+        EWMA_ALPHA
+      );
+    }
+    jobTimings.delete(jobId);
+  };
 
   const markIdle = (state: WorkerState): void => {
     state.idle = true;
@@ -335,6 +781,7 @@ export async function runScrapeWithWorkers(
     idleHybrid.delete(state.id);
     state.idle = false;
     state.currentJobId = next.jobId;
+    recordAssignment(state, next.jobId);
     const waitUntilMs = computeWaitUntil(
       nextAllowedByOrigin,
       next.url,
@@ -390,6 +837,7 @@ export async function runScrapeWithWorkers(
     message: Extract<WorkerToMainMessage, { type: "progress" }>
   ): void => {
     if (message.stage === "fetch") {
+      markActiveStart(message.jobId);
       logger.updateProgress(processedCount, message.url, totalUrls);
     }
   };
@@ -401,6 +849,7 @@ export async function runScrapeWithWorkers(
     inFlightCount -= 1;
     processedCount += 1;
     state.currentJobId = null;
+    recordTerminal(message.jobId, "completed");
     jobMap.delete(message.jobId);
     logger.incrementProgress(message.url);
     logger.logPageSaved(message.url, undefined, `${state.kind}:${state.id}`);
@@ -414,6 +863,7 @@ export async function runScrapeWithWorkers(
     inFlightCount -= 1;
     processedCount += 1;
     state.currentJobId = null;
+    recordTerminal(message.jobId, "failed");
     logger.recordFailure();
     logger.error(`Failed ${message.url}: ${message.error}`);
     logger.incrementProgress(message.url);
@@ -427,15 +877,11 @@ export async function runScrapeWithWorkers(
   ): void => {
     inFlightCount -= 1;
     state.currentJobId = null;
+    recordTerminal(message.jobId, "markdownUnavailable");
     const job = jobMap.get(message.jobId);
     if (job) {
       hybridQueue.push(job);
       dispatchIdle();
-    }
-    if (state.kind === "markdown" && markdownTarget > 1) {
-      markdownTarget -= 1;
-      pool.stopWorker(state.id);
-      pool.spawnWorker("hybrid");
     }
     checkDone();
   };
@@ -488,21 +934,41 @@ export async function runScrapeWithWorkers(
     }
   };
 
-  pool = createWorkerPool(options, handleScrapeMessage);
+  pool = createWorkerPool(options, handleScrapeMessage, knownUrlFilterInit);
 
-  for (let i = 0; i < markdownTarget; i += 1) {
+  for (let i = 0; i < MIN_WORKERS_PER_KIND; i += 1) {
     pool.spawnWorker("markdown");
   }
-  for (let i = 0; i < totalWorkers - markdownTarget; i += 1) {
+  for (let i = 0; i < MIN_WORKERS_PER_KIND; i += 1) {
     pool.spawnWorker("hybrid");
   }
 
-  pool.broadcastKnownUrls(Array.from(knownUrls));
+  stopAutoScaler = startAutoScaler({
+    pool,
+    idleMarkdown,
+    idleHybrid,
+    maxTotalWorkers,
+    getPendingCounts: () => ({
+      pendingMarkdown: markdownQueue.length,
+      pendingHybrid: hybridQueue.length,
+    }),
+    getMetrics: () => ({
+      markdownActiveMs,
+      hybridActiveMs,
+      markdownUnavailableRate,
+    }),
+    isDone: () => isDone,
+    label: "scrape",
+  });
 
   await new Promise<void>((resolve) => {
     doneResolve = resolve;
     checkDone();
   });
+
+  if (stopAutoScaler) {
+    stopAutoScaler();
+  }
 
   await pool.stopAll();
   logger.endProgress();
@@ -539,11 +1005,16 @@ export async function runCrawlWithWorkers(
     robotsPolicy.crawlDelayMs ?? 0
   );
 
-  const totalWorkers = Math.max(options.concurrency, MIN_TOTAL_WORKERS);
-  let markdownTarget = Math.max(1, totalWorkers - 1);
+  const { filter: knownUrlFilter, init: knownUrlFilterInit } =
+    createKnownUrlFilter(options.maxPages);
+  const maxTotalWorkers = Math.max(options.concurrency, MIN_TOTAL_WORKERS);
   const markdownQueue: QueueItem[] = [];
   const hybridQueue: QueueItem[] = [];
   const jobMap = new Map<string, QueueItem>();
+  const jobTimings = new Map<string, JobTiming>();
+  let markdownActiveMs = DEFAULT_MARKDOWN_ACTIVE_MS;
+  let hybridActiveMs = DEFAULT_HYBRID_ACTIVE_MS;
+  let markdownUnavailableRate = DEFAULT_MARKDOWN_UNAVAILABLE_RATE;
   const knownUrls = new Set<string>();
   const visited = new Set<string>();
   const failures: string[] = [];
@@ -554,6 +1025,7 @@ export async function runCrawlWithWorkers(
   let inFlightCount = 0;
   let doneResolve: (() => void) | null = null;
   let isDone = false;
+  let stopAutoScaler: (() => void) | null = null;
 
   const crawlContext: CrawlContext = {
     scopeOrigin,
@@ -571,6 +1043,7 @@ export async function runCrawlWithWorkers(
 
   const initialNormalized = normalizeForQueue(start);
   knownUrls.add(initialNormalized);
+  knownUrlFilter.add(initialNormalized);
   jobMap.set(initialJobId, initialItem);
   markdownQueue.push(initialItem);
 
@@ -583,6 +1056,52 @@ export async function runCrawlWithWorkers(
 
   let pool: WorkerPool;
 
+  const recordAssignment = (state: WorkerState, jobId: string): void => {
+    jobTimings.set(jobId, {
+      kind: state.kind,
+      assignedAtMs: Date.now(),
+      activeStartAtMs: null,
+    });
+  };
+
+  const markActiveStart = (jobId: string): void => {
+    const timing = jobTimings.get(jobId);
+    if (!timing || timing.activeStartAtMs !== null) {
+      return;
+    }
+    timing.activeStartAtMs = Date.now();
+  };
+
+  const recordTerminal = (
+    jobId: string,
+    outcome: "completed" | "failed" | "markdownUnavailable"
+  ): void => {
+    const timing = jobTimings.get(jobId);
+    if (timing?.activeStartAtMs) {
+      const durationMs = Date.now() - timing.activeStartAtMs;
+      if (durationMs > 0) {
+        if (timing.kind === "markdown") {
+          markdownActiveMs = updateEwma(
+            markdownActiveMs,
+            durationMs,
+            EWMA_ALPHA
+          );
+        } else {
+          hybridActiveMs = updateEwma(hybridActiveMs, durationMs, EWMA_ALPHA);
+        }
+      }
+    }
+    if (timing?.kind === "markdown") {
+      const sample = outcome === "markdownUnavailable" ? 1 : 0;
+      markdownUnavailableRate = updateEwma(
+        markdownUnavailableRate,
+        sample,
+        EWMA_ALPHA
+      );
+    }
+    jobTimings.delete(jobId);
+  };
+
   const markIdle = (state: WorkerState): void => {
     state.idle = true;
     if (state.kind === "markdown") {
@@ -590,13 +1109,6 @@ export async function runCrawlWithWorkers(
     } else {
       idleHybrid.add(state.id);
     }
-  };
-
-  const enqueueKnownUrls = (urls: string[]): void => {
-    if (urls.length === 0) {
-      return;
-    }
-    pool.broadcastKnownUrls(urls);
   };
 
   const maybeFinish = (): void => {
@@ -623,7 +1135,6 @@ export async function runCrawlWithWorkers(
       return;
     }
     let added = 0;
-    const broadcast: string[] = [];
     for (const link of links) {
       const pending = getPendingCount();
       if (savedCount + pending >= options.maxPages) {
@@ -634,7 +1145,7 @@ export async function runCrawlWithWorkers(
         continue;
       }
       knownUrls.add(normalized);
-      broadcast.push(normalized);
+      knownUrlFilter.add(normalized);
       const nextDepth = parentDepth + 1;
       const jobId = createJobId();
       const job: QueueItem = {
@@ -649,7 +1160,6 @@ export async function runCrawlWithWorkers(
       added += 1;
     }
     if (added > 0) {
-      enqueueKnownUrls(broadcast);
       logger.setProgressTotal(getDynamicTotal());
       dispatchIdle();
     }
@@ -679,6 +1189,7 @@ export async function runCrawlWithWorkers(
       idleMarkdown.delete(state.id);
       state.idle = false;
       state.currentJobId = next.jobId;
+      recordAssignment(state, next.jobId);
       const waitUntilMs = computeWaitUntil(
         nextAllowedByOrigin,
         next.url,
@@ -710,6 +1221,7 @@ export async function runCrawlWithWorkers(
     idleHybrid.delete(state.id);
     state.idle = false;
     state.currentJobId = next.jobId;
+    recordAssignment(state, next.jobId);
     const waitUntilMs = computeWaitUntil(
       nextAllowedByOrigin,
       next.url,
@@ -764,6 +1276,7 @@ export async function runCrawlWithWorkers(
     message: Extract<WorkerToMainMessage, { type: "progress" }>
   ): void => {
     if (message.stage === "fetch") {
+      markActiveStart(message.jobId);
       logger.updateProgress(savedCount, message.url, getDynamicTotal());
     }
   };
@@ -774,6 +1287,7 @@ export async function runCrawlWithWorkers(
   ): void => {
     inFlightCount -= 1;
     state.currentJobId = null;
+    recordTerminal(message.jobId, "completed");
     jobMap.delete(message.jobId);
     savedCount += 1;
     logger.updateProgress(savedCount, message.url, getDynamicTotal());
@@ -792,6 +1306,7 @@ export async function runCrawlWithWorkers(
   ): void => {
     inFlightCount -= 1;
     state.currentJobId = null;
+    recordTerminal(message.jobId, "failed");
     jobMap.delete(message.jobId);
     failures.push(`${message.url}: ${message.error}`);
     logger.recordFailure();
@@ -805,15 +1320,11 @@ export async function runCrawlWithWorkers(
   ): void => {
     inFlightCount -= 1;
     state.currentJobId = null;
+    recordTerminal(message.jobId, "markdownUnavailable");
     const job = jobMap.get(message.jobId);
     if (job) {
       hybridQueue.push(job);
       dispatchIdle();
-    }
-    if (state.kind === "markdown" && markdownTarget > 1) {
-      markdownTarget -= 1;
-      pool.stopWorker(state.id);
-      pool.spawnWorker("hybrid");
     }
     maybeFinish();
   };
@@ -866,21 +1377,41 @@ export async function runCrawlWithWorkers(
     }
   };
 
-  pool = createWorkerPool(options, handleCrawlMessage);
+  pool = createWorkerPool(options, handleCrawlMessage, knownUrlFilterInit);
 
-  for (let i = 0; i < markdownTarget; i += 1) {
+  for (let i = 0; i < MIN_WORKERS_PER_KIND; i += 1) {
     pool.spawnWorker("markdown");
   }
-  for (let i = 0; i < totalWorkers - markdownTarget; i += 1) {
+  for (let i = 0; i < MIN_WORKERS_PER_KIND; i += 1) {
     pool.spawnWorker("hybrid");
   }
 
-  pool.broadcastKnownUrls(Array.from(knownUrls));
+  stopAutoScaler = startAutoScaler({
+    pool,
+    idleMarkdown,
+    idleHybrid,
+    maxTotalWorkers,
+    getPendingCounts: () => ({
+      pendingMarkdown: markdownQueue.length,
+      pendingHybrid: hybridQueue.length,
+    }),
+    getMetrics: () => ({
+      markdownActiveMs,
+      hybridActiveMs,
+      markdownUnavailableRate,
+    }),
+    isDone: () => isDone,
+    label: "crawl",
+  });
 
   await new Promise<void>((resolve) => {
     doneResolve = resolve;
     maybeFinish();
   });
+
+  if (stopAutoScaler) {
+    stopAutoScaler();
+  }
 
   await pool.stopAll();
 

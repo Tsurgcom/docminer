@@ -1,5 +1,6 @@
 import path from "node:path";
 import { JSDOM } from "jsdom";
+import type { KnownUrlLookup } from "./bloom";
 import type { CliOptions, ScrapeResult } from "./types";
 import {
   buildOutputPaths,
@@ -292,7 +293,7 @@ export async function resolveLinkToRelative(
   href: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string,
@@ -314,10 +315,19 @@ export async function resolveLinkToRelative(
     options.outDir
   );
 
-  const targetExists =
-    knownUrls.has(normalizedTarget) ||
-    linkHints?.has(normalizedTarget) ||
-    (await fileExists(targetPagePath));
+  const knownMatch = knownUrls.has(normalizedTarget);
+  const hintMatch = linkHints?.has(normalizedTarget) ?? false;
+  const shouldConfirm = Boolean(
+    knownMatch && knownUrls.isProbabilistic && !hintMatch
+  );
+  let targetExists = false;
+  if (knownMatch) {
+    targetExists = shouldConfirm ? await fileExists(targetPagePath) : true;
+  } else if (hintMatch) {
+    targetExists = true;
+  } else {
+    targetExists = await fileExists(targetPagePath);
+  }
   if (!targetExists) {
     return null;
   }
@@ -334,7 +344,7 @@ export async function rewriteLinksInMarkdown(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -374,7 +384,7 @@ export async function rewriteMarkdownContent(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -408,7 +418,7 @@ async function linkifyBareUrls(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -488,7 +498,7 @@ async function rewriteInlineMarkdownLinks(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -550,7 +560,7 @@ async function rewriteReferenceMarkdownLinks(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -601,7 +611,7 @@ async function rewriteMarkdownHrefAttributes(
   markdown: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -838,7 +848,7 @@ async function linkifyBareUrlsInLine(
   line: string,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string
@@ -1001,7 +1011,7 @@ export async function rewriteLinksInResult(
   result: ScrapeResult,
   currentUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>,
+  knownUrls: KnownUrlLookup,
   linkBaseUrl?: string,
   linkHints?: Set<string>,
   scopePathPrefix?: string

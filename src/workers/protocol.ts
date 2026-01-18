@@ -1,3 +1,4 @@
+import type { BloomFilterInit } from "../bloom";
 import type { CliOptions } from "../types";
 
 export type WorkerKind = "markdown" | "hybrid";
@@ -25,14 +26,11 @@ export type MainToWorkerMessage =
       kind: WorkerKind;
       options: WorkerOptions;
       inactivityMs: number;
+      knownUrlFilter: BloomFilterInit;
     }
   | {
       type: "assign";
       job: JobPayload;
-    }
-  | {
-      type: "knownUrls";
-      urls: string[];
     }
   | {
       type: "renderWithPlaywright";

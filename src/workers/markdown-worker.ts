@@ -1,3 +1,4 @@
+import { BloomFilter, type KnownUrlLookup } from "../bloom";
 import { extractMarkdownContent } from "../content";
 import { writeOutputs } from "../io";
 import { extractLinksFromMarkdown, rewriteLinksInResult } from "../links";
@@ -13,7 +14,7 @@ import type {
 
 declare let self: Worker;
 
-const knownUrls = new Set<string>();
+const emptyKnownUrlFilter: KnownUrlLookup = { has: () => false };
 let workerId = "";
 let workerKind: WorkerKind = "markdown";
 let options: WorkerOptions | null = null;
@@ -21,6 +22,7 @@ let inactivityMs = 60_000;
 let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 let activeJob: JobPayload | null = null;
 let stopRequested = false;
+let knownUrlFilter: KnownUrlLookup = emptyKnownUrlFilter;
 
 const post = (message: WorkerToMainMessage): void => {
   postMessage(message);
@@ -71,14 +73,6 @@ const waitUntil = async (
   }
 };
 
-const addKnownUrls = (urls: string[]): void => {
-  for (const url of urls) {
-    if (url) {
-      knownUrls.add(url);
-    }
-  }
-};
-
 const requestNext = (): void => {
   if (stopRequested) {
     post({ type: "stopped", workerId, reason: "stop" });
@@ -97,7 +91,6 @@ const runJob = async (job: JobPayload): Promise<void> => {
   clearInactivityTimer();
 
   try {
-    knownUrls.add(normalizeForQueue(new URL(job.url)));
     await waitUntil(job.waitUntilMs, job);
     post({
       type: "progress",
@@ -158,7 +151,7 @@ const runJob = async (job: JobPayload): Promise<void> => {
         ...workerOptions,
         verbose: false,
       },
-      knownUrls,
+      knownUrlFilter,
       undefined,
       linkHints,
       crawlContext?.scopePathPrefix
@@ -209,14 +202,11 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
     workerKind = message.kind;
     options = message.options;
     inactivityMs = message.inactivityMs;
-    addKnownUrls([]);
+    knownUrlFilter = message.knownUrlFilter
+      ? new BloomFilter(message.knownUrlFilter)
+      : emptyKnownUrlFilter;
     post({ type: "ready", workerId, kind: workerKind });
     requestNext();
-    return;
-  }
-
-  if (message.type === "knownUrls") {
-    addKnownUrls(message.urls);
     return;
   }
 

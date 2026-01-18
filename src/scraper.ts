@@ -1,4 +1,5 @@
 import { JSDOM } from "jsdom";
+import type { KnownUrlLookup } from "./bloom";
 import { extractContent, extractMarkdownContent } from "./content";
 import { loadUrls, writeOutputs } from "./io";
 import { resolveDocumentBaseUrl, rewriteLinksInResult } from "./links";
@@ -10,7 +11,7 @@ import { runCrawlWithWorkers, runScrapeWithWorkers } from "./worker-scheduler";
 export async function scrapeOne(
   targetUrl: string,
   options: CliOptions,
-  knownUrls: Set<string>
+  knownUrls: KnownUrlLookup
 ): Promise<void> {
   const markdownSource = await fetchMarkdownIfAvailable(targetUrl, {
     timeoutMs: options.timeoutMs,
