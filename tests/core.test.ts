@@ -31,6 +31,15 @@ const TABLE_HEADER_REGEX = /\|\s*Col\s*\|/;
 const TABLE_SEPARATOR_REGEX = /\|\s*-+\s*\|/;
 const TABLE_VALUE_REGEX = /\|\s*Val\s*\|/;
 
+const ensureScrape = (
+  result: ReturnType<typeof parseArgs>
+): Extract<ReturnType<typeof parseArgs>, { command: "scrape" }> => {
+  if (result.command !== "scrape") {
+    throw new Error(`Expected scrape command, got ${result.command}`);
+  }
+  return result;
+};
+
 describe("utility helpers", () => {
   test("parsePositiveInt falls back on invalid input", () => {
     expect(parsePositiveInt(undefined, 3)).toBe(3);
@@ -81,27 +90,33 @@ describe("utility helpers", () => {
 
 describe("argument parsing", () => {
   test("defaults to crawl when a single positional URL is provided", () => {
-    const { options, showHelp } = parseArgs(["https://example.com"]);
+    const { options, showHelp } = ensureScrape(
+      parseArgs(["https://example.com"])
+    );
     expect(showHelp).toBe(false);
     expect(options.crawlStart).toBe("https://example.com");
   });
 
   test("accepts explicit url target keyword", () => {
-    const { options, showHelp } = parseArgs(["url", "https://example.com"]);
+    const { options, showHelp } = ensureScrape(
+      parseArgs(["url", "https://example.com"])
+    );
     expect(showHelp).toBe(false);
     expect(options.url).toBe("https://example.com");
     expect(options.crawlStart).toBeUndefined();
   });
 
   test("accepts explicit urls file target keyword", () => {
-    const { options, showHelp } = parseArgs(["urls", "./urls.txt"]);
+    const { options, showHelp } = ensureScrape(
+      parseArgs(["urls", "./urls.txt"])
+    );
     expect(showHelp).toBe(false);
     expect(options.urlsFile).toBe("./urls.txt");
     expect(options.crawlStart).toBeUndefined();
   });
 
   test("returns help when no targets are provided", () => {
-    const { showHelp, options } = parseArgs([]);
+    const { showHelp, options } = ensureScrape(parseArgs([]));
     expect(showHelp).toBe(true);
     expect(options.url).toBeUndefined();
     expect(options.urlsFile).toBeUndefined();

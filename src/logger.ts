@@ -45,6 +45,7 @@ interface ProgressState {
   failures: number;
   startTime: number;
   isActive: boolean;
+  workerInfo: string;
 }
 
 // Minimum widths for different display modes
@@ -199,6 +200,7 @@ class Logger {
       failures: 0,
       startTime: Date.now(),
       isActive: true,
+      workerInfo: "",
     };
 
     if (this.isTerminal && this.config.showProgress) {
@@ -233,6 +235,17 @@ class Logger {
     }
 
     this.progress.total = total;
+    this.renderProgress();
+  }
+
+  setWorkerCounts(total: number, markdown: number, hybrid: number): void {
+    if (!this.progress) {
+      return;
+    }
+    this.progress.workerInfo =
+      total > 0
+        ? `${ANSI.dim}Workers:${ANSI.reset} ${total} (md ${markdown}, hybrid ${hybrid})`
+        : "";
     this.renderProgress();
   }
 
@@ -303,10 +316,11 @@ class Logger {
     this.clearProgressLines();
 
     const termWidth = this.getTerminalWidth();
-    const { current, total, currentUrl, failures } = this.progress;
+    const { current, total, currentUrl, failures, workerInfo } = this.progress;
     const percent = total > 0 ? Math.round((current / total) * 100) : 0;
     const elapsed = this.formatDuration(Date.now() - this.progress.startTime);
     const eta = this.calculateEta();
+    const showWorkers = Boolean(workerInfo);
 
     // Different display modes based on terminal width
     if (termWidth >= MIN_WIDTH_FULL) {
@@ -318,12 +332,24 @@ class Logger {
         failures,
         elapsed,
         eta,
-        currentUrl
+        currentUrl,
+        workerInfo
       );
     } else if (termWidth >= MIN_WIDTH_COMPACT) {
-      this.renderCompactProgress(termWidth, current, total, percent, elapsed);
+      this.renderCompactProgress(
+        termWidth,
+        current,
+        total,
+        percent,
+        elapsed,
+        showWorkers ? workerInfo : ""
+      );
     } else if (termWidth >= MIN_WIDTH_MINIMAL) {
-      this.renderMinimalProgress(termWidth, percent);
+      this.renderMinimalProgress(
+        termWidth,
+        percent,
+        showWorkers ? workerInfo : ""
+      );
     }
     // Skip rendering entirely if terminal is too narrow (< MIN_WIDTH_MINIMAL)
   }
@@ -341,7 +367,8 @@ class Logger {
     failures: number,
     elapsed: string,
     eta: string,
-    currentUrl: string
+    currentUrl: string,
+    workerInfo: string
   ): void {
     // Build info line components
     const stats = `${current}/${total}`;
@@ -375,7 +402,13 @@ class Logger {
 
     const barLine = `${ANSI.dim}[${ANSI.reset}${ANSI.green}${"█".repeat(filledWidth)}${ANSI.gray}${"░".repeat(emptyWidth)}${ANSI.reset}${ANSI.dim}]${ANSI.reset} ${ANSI.bold}${percentText}${ANSI.reset}`;
 
-    // Write both lines
+    if (workerInfo) {
+      const workerLine = `${workerInfo}`;
+      process.stdout.write(`${workerLine}\n${infoLine}\n${barLine}`);
+      this.progressLineCount = 3;
+      return;
+    }
+
     process.stdout.write(`${infoLine}\n${barLine}`);
     this.progressLineCount = 2;
   }
@@ -389,7 +422,8 @@ class Logger {
     current: number,
     total: number,
     percent: number,
-    elapsed: string
+    elapsed: string,
+    workerInfo: string
   ): void {
     const stats = `(${current}/${total})`;
     const percentText = `${percent}%`;
@@ -404,6 +438,12 @@ class Logger {
 
     const line = `${ANSI.dim}[${ANSI.reset}${ANSI.green}${"█".repeat(filledWidth)}${ANSI.gray}${"░".repeat(emptyWidth)}${ANSI.reset}${ANSI.dim}]${ANSI.reset} ${ANSI.bold}${percentText}${ANSI.reset} ${ANSI.dim}${stats} ${elapsed}${ANSI.reset}`;
 
+    if (workerInfo) {
+      process.stdout.write(`${workerInfo}\n${line}`);
+      this.progressLineCount = 2;
+      return;
+    }
+
     process.stdout.write(line);
     this.progressLineCount = 1;
   }
@@ -412,7 +452,11 @@ class Logger {
    * Minimal progress for very small terminals.
    * Shows just: [████░░░░] 50%
    */
-  private renderMinimalProgress(termWidth: number, percent: number): void {
+  private renderMinimalProgress(
+    termWidth: number,
+    percent: number,
+    workerInfo: string
+  ): void {
     const percentText = `${percent}%`;
     const percentWidth = percentText.length;
     const bracketSpace = 2;
@@ -426,6 +470,12 @@ class Logger {
     const emptyWidth = barWidth - filledWidth;
 
     const line = `${ANSI.dim}[${ANSI.reset}${ANSI.green}${"█".repeat(filledWidth)}${ANSI.gray}${"░".repeat(emptyWidth)}${ANSI.reset}${ANSI.dim}]${ANSI.reset} ${ANSI.bold}${percentText}${ANSI.reset}`;
+
+    if (workerInfo) {
+      process.stdout.write(`${workerInfo}\n${line}`);
+      this.progressLineCount = 2;
+      return;
+    }
 
     process.stdout.write(line);
     this.progressLineCount = 1;
@@ -508,10 +558,13 @@ class Logger {
   /**
    * Log a successful page save.
    */
-  logPageSaved(url: string, depth?: number): void {
+  logPageSaved(url: string, depth?: number, agent?: string): void {
     const depthInfo =
       depth !== undefined ? ` ${ANSI.dim}(depth ${depth})${ANSI.reset}` : "";
-    this.success(`Saved ${ANSI.cyan}${url}${ANSI.reset}${depthInfo}`);
+    const agentInfo = agent ? ` ${ANSI.dim}[${agent}]${ANSI.reset}` : "";
+    this.success(
+      `Saved ${ANSI.cyan}${url}${ANSI.reset}${depthInfo}${agentInfo}`
+    );
   }
 
   /**

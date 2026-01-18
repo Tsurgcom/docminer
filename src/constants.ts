@@ -13,9 +13,9 @@ export const DEFAULT_OPTIONS: CliOptions = {
   clutter: false,
   render: true,
   progress: true,
-  maxDepth: 3,
-  maxPages: 200,
-  delayMs: 500,
+  maxDepth: 5,
+  maxPages: 1000,
+  delayMs: 150,
   respectRobots: true,
 };
 

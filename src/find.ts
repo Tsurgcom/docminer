@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -18,10 +19,10 @@ export async function findFiles(directory: string): Promise<string[]> {
   const files: string[] = [];
 
   async function walk(dir: string): Promise<void> {
-    let entries: Awaited<ReturnType<typeof readdir>>;
+    let entries: Dirent<string>[] = [];
 
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true, encoding: "utf8" });
     } catch {
       return;
     }
@@ -97,7 +98,7 @@ export async function searchContent(
     const matches: ContentMatch[] = [];
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i] ?? "";
       const match = substringMatch(query, line);
 
       if (match) {

@@ -81,6 +81,13 @@ export async function fetchWithRetries(
     : new Error("Failed to fetch URL");
 }
 
+export async function fetchHtml(
+  targetUrl: string,
+  options: Pick<CliOptions, "timeoutMs" | "retries" | "userAgent" | "verbose">
+): Promise<string> {
+  return await fetchWithRetries(targetUrl, options);
+}
+
 export function buildMarkdownCandidateUrl(targetUrl: string): string {
   const parsed = new URL(targetUrl);
   parsed.hash = "";
@@ -206,7 +213,7 @@ export async function getPageHtml(
   if (isBlockedDownloadUrl(targetUrl)) {
     throw new Error(`Refusing to fetch blocked asset: ${targetUrl}`);
   }
-  const rawHtml = await fetchWithRetries(targetUrl, options);
+  const rawHtml = await fetchHtml(targetUrl, options);
   if (!options.render || hasMeaningfulText(rawHtml)) {
     return rawHtml;
   }

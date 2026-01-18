@@ -55,7 +55,8 @@ export function fuzzyMatch(query: string, target: string): FuzzyMatch | null {
       }
 
       // Word boundary bonus (start of string or after separator)
-      if (i === 0 || isWordBoundary(target[i - 1])) {
+      const previousChar = target[i - 1] ?? "";
+      if (i === 0 || isWordBoundary(previousChar)) {
         matchScore += WORD_BOUNDARY_BONUS;
       }
 
