@@ -204,9 +204,10 @@ export async function rewriteLinksInResult(
 
   return {
     markdown: await rewrite(result.markdown),
-    clutterMarkdown: result.clutterMarkdown
-      ? await rewrite(result.clutterMarkdown)
-      : "",
+    clutterMarkdown:
+      options.clutter && result.clutterMarkdown
+        ? await rewrite(result.clutterMarkdown)
+        : "",
     llmsMarkdown: await rewrite(result.llmsMarkdown),
     llmsFullMarkdown: await rewrite(result.llmsFullMarkdown),
   };

@@ -77,6 +77,7 @@ export function printCrawlHelp(): void {
     "      --[no-]render        Enable/disable headless rendering for SPAs (default: on)",
     "      --[no-]progress      Show/hide progress bar (default: on)",
     "      --[no-]overwrite     Overwrite existing .llms.md files (default: off)",
+    "      --[no-]clutter       Write .clutter.md output (default: off)",
     "",
     "  -h, --help               Show this help",
     "",
@@ -105,6 +106,7 @@ export function printScrapeHelp(): void {
     "      --[no-]render        Enable/disable headless rendering for SPAs (default: on)",
     "      --[no-]progress      Show/hide progress bar (default: on)",
     "      --[no-]overwrite     Overwrite existing .llms.md files (default: off)",
+    "      --[no-]clutter       Write .clutter.md output (default: off)",
     "",
     "  -h, --help               Show this help",
     "",
@@ -379,6 +381,18 @@ function parseCrawlArgs(args: string[]): CrawlParseResult {
     },
     {
       handler: () => {
+        opts.clutter = true;
+      },
+      aliases: ["--clutter"],
+    },
+    {
+      handler: () => {
+        opts.clutter = false;
+      },
+      aliases: ["--no-clutter"],
+    },
+    {
+      handler: () => {
         showHelp = true;
       },
       aliases: ["-h", "--help"],
@@ -607,6 +621,18 @@ export function parseArgs(args: string[]): ParseResult {
         opts.overwriteLlms = false;
       },
       aliases: ["--no-overwrite", "--no-overwrite-llms"],
+    },
+    {
+      handler: () => {
+        opts.clutter = true;
+      },
+      aliases: ["--clutter"],
+    },
+    {
+      handler: () => {
+        opts.clutter = false;
+      },
+      aliases: ["--no-clutter"],
     },
 
     // Help

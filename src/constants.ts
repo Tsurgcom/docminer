@@ -1,4 +1,5 @@
 import TurndownService from "turndown";
+import { gfm } from "turndown-plugin-gfm";
 import type { CliOptions } from "./types";
 
 export const DEFAULT_OPTIONS: CliOptions = {
@@ -9,6 +10,7 @@ export const DEFAULT_OPTIONS: CliOptions = {
   userAgent: "aidocs-scraper/1.0",
   verbose: false,
   overwriteLlms: false,
+  clutter: false,
   render: true,
   progress: true,
   maxDepth: 3,
@@ -44,6 +46,8 @@ export const turndownService = new TurndownService({
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
 });
+
+turndownService.use(gfm);
 
 interface TurndownNode {
   nodeName?: string;

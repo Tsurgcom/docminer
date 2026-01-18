@@ -9,6 +9,7 @@ export interface CliOptions {
   userAgent: string;
   verbose: boolean;
   overwriteLlms: boolean;
+  clutter: boolean;
   render: boolean;
   progress: boolean;
   maxDepth: number;

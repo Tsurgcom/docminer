@@ -14,7 +14,7 @@ export async function writeOutputs(
   await ensureDir(dir);
 
   await writeFile(pagePath, result.markdown, "utf8");
-  if (result.clutterMarkdown) {
+  if (options.clutter && result.clutterMarkdown) {
     await writeFile(clutterPath, result.clutterMarkdown, "utf8");
   }
 

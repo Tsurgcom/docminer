@@ -30,7 +30,7 @@ bun run index.ts urls urls.txt --concurrency 4
 
 The crawler respects `robots.txt` and applies crawl-delay values unless you pass `--no-robots`.
 
-Outputs go to `.docs/<snake_domain>/<path>/page.md` with clutter saved to `clutter.md`. Existing `.llms.md` and `llms-full.md` are left untouched unless you pass `--overwrite-llms`.
+Outputs go to `.docs/<snake_domain>/<path>/page.md` with clutter saved to `.clutter.md` when you pass `--clutter`. Existing `.llms.md` and `llms-full.md` are left untouched unless you pass `--overwrite-llms`.
 
 Common flags:
 
