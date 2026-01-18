@@ -170,15 +170,15 @@ Crawl-delay: 2
     expect(policy.crawlDelayMs).toBe(2000);
   });
 
-  test("missing allow", () => {
+  test("allows all paths when Disallow is empty", () => {
     const robots = `
 User-agent: *
 Disallow: 
 `.trim();
     const policy = parseRobotsTxt(robots, DEFAULT_OPTIONS.userAgent);
     expect(policy.isAllowed("/")).toBe(true);
-    expect(policy.isAllowed("/other")).toBe(false);
-    expect(policy.crawlDelayMs).toBe(2000);
+    expect(policy.isAllowed("/other")).toBe(true);
+    expect(policy.crawlDelayMs).toBeUndefined();
   });
 
   test("normalize rule helper always prefixes slash", () => {

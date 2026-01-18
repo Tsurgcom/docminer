@@ -89,16 +89,20 @@ export function parseRobotsTxt(
     }
 
     if (directive === "allow") {
-      applyToAgents((entry) => {
-        entry.allow.push(normalizeRulePath(value));
-      });
+      if (value) {
+        applyToAgents((entry) => {
+          entry.allow.push(normalizeRulePath(value));
+        });
+      }
       continue;
     }
 
     if (directive === "disallow") {
-      applyToAgents((entry) => {
-        entry.disallow.push(normalizeRulePath(value));
-      });
+      if (value) {
+        applyToAgents((entry) => {
+          entry.disallow.push(normalizeRulePath(value));
+        });
+      }
       continue;
     }
 
