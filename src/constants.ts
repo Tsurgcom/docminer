@@ -1,5 +1,4 @@
 import TurndownService from "turndown";
-import { gfm } from "turndown-plugin-gfm";
 import type { CliOptions } from "./types";
 
 export const DEFAULT_OPTIONS: CliOptions = {
@@ -46,8 +45,6 @@ export const turndownService = new TurndownService({
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
 });
-
-turndownService.use(gfm);
 
 interface TurndownNode {
   nodeName?: string;
@@ -130,5 +127,149 @@ turndownService.addRule("singleLineAnchors", {
 
     const prefix = "#".repeat(headingLevel);
     return `${prefix} ${link}\n`;
+  },
+});
+
+// Custom table handling to avoid tr.parentNode errors
+interface TableNode extends TurndownNode {
+  rows?: HTMLCollectionOf<HTMLTableRowElement> | ArrayLike<TurndownNode>;
+  parentNode?: TableNode;
+  firstChild?: TableNode;
+  previousSibling?: TableNode;
+}
+
+const getCellContent = (cell: TurndownNode): string => {
+  const content = collectTextContent(cell);
+  // Escape pipe characters and normalize whitespace
+  return content.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+};
+
+const isHeadingCell = (node: TurndownNode): boolean => {
+  return node.nodeName === "TH";
+};
+
+const collectTableRows = (
+  element: TurndownNode,
+  rows: TurndownNode[]
+): void => {
+  if (!element.childNodes) {
+    return;
+  }
+
+  for (const child of Array.from(element.childNodes)) {
+    if (!child) {
+      continue;
+    }
+
+    if (child.nodeName === "TR") {
+      rows.push(child);
+    } else if (["THEAD", "TBODY", "TFOOT"].includes(child.nodeName ?? "")) {
+      collectTableRows(child, rows);
+    }
+  }
+};
+
+const extractCellsFromRow = (row: TurndownNode): TurndownNode[] => {
+  if (!row.childNodes) {
+    return [];
+  }
+
+  const cells: TurndownNode[] = [];
+  for (const cell of Array.from(row.childNodes)) {
+    if (cell && ["TD", "TH"].includes(cell.nodeName ?? "")) {
+      cells.push(cell);
+    }
+  }
+  return cells;
+};
+
+const buildTableRow = (cells: TurndownNode[]): string => {
+  const cellContents = cells.map(getCellContent);
+  return `| ${cellContents.join(" | ")} |`;
+};
+
+const buildHeaderSeparator = (cellCount: number): string => {
+  const separators = new Array(cellCount).fill("---");
+  return `| ${separators.join(" | ")} |`;
+};
+
+const addDefaultHeader = (
+  rows: TurndownNode[],
+  markdownRows: string[]
+): void => {
+  const firstRow = rows[0];
+  if (!firstRow?.childNodes) {
+    return;
+  }
+
+  const cellCount = Array.from(firstRow.childNodes).filter(
+    (cell) => cell && ["TD", "TH"].includes(cell.nodeName ?? "")
+  ).length;
+
+  if (cellCount > 0) {
+    const headers = new Array(cellCount)
+      .fill("Column")
+      .map((c, i) => `${c} ${i + 1}`);
+    const headerRow = `| ${headers.join(" | ")} |`;
+    const separator = buildHeaderSeparator(cellCount);
+    markdownRows.unshift(separator);
+    markdownRows.unshift(headerRow);
+  }
+};
+
+turndownService.addRule("tables", {
+  filter: "table",
+  replacement(content, node): string {
+    const tableNode = node as TableNode;
+    const rows: TurndownNode[] = [];
+
+    collectTableRows(tableNode, rows);
+
+    if (rows.length === 0) {
+      return content;
+    }
+
+    const markdownRows: string[] = [];
+    let hasHeader = false;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row) {
+        continue;
+      }
+
+      const cells = extractCellsFromRow(row);
+      if (cells.length === 0) {
+        continue;
+      }
+
+      const isHeaderRow = i === 0 || cells.some(isHeadingCell);
+      const rowContent = buildTableRow(cells);
+      markdownRows.push(rowContent);
+
+      if (isHeaderRow && !hasHeader) {
+        const separator = buildHeaderSeparator(cells.length);
+        markdownRows.push(separator);
+        hasHeader = true;
+      }
+    }
+
+    if (markdownRows.length === 0) {
+      return content;
+    }
+
+    if (!hasHeader && markdownRows.length > 0) {
+      addDefaultHeader(rows, markdownRows);
+    }
+
+    return `\n\n${markdownRows.join("\n")}\n\n`;
+  },
+});
+
+// Keep strikethrough support
+turndownService.addRule("strikethrough", {
+  filter: ["del", "s"],
+  replacement(content): string {
+    return `~~${content}~~`;
   },
 });
