@@ -11,6 +11,49 @@ import type {
   WorkerToMainMessage,
 } from "./workers/protocol";
 
+const resolveWorkerPath = (workerName: string): string => {
+  // Check if we're running from source (development) or built (production)
+  const currentFile = import.meta.url;
+  const isDevelopment = currentFile.includes("/src/");
+
+  if (isDevelopment) {
+    // In development, use TypeScript source files
+    // Bun resolves paths relative to project root
+    return `./src/workers/${workerName}.ts`;
+  }
+
+  // In production (when installed from npm)
+  // Bun resolves paths relative to project root, but we need to find the package location
+  // Try to detect if we're in node_modules and construct the path accordingly
+  const isInNodeModules = currentFile.includes("/node_modules/");
+
+  if (isInNodeModules) {
+    // Extract package path from node_modules
+    const nodeModulesIndex = currentFile.indexOf("/node_modules/");
+    const afterNodeModules = currentFile.slice(
+      nodeModulesIndex + "/node_modules/".length
+    );
+    const packageNameEnd = afterNodeModules.indexOf("/");
+    if (packageNameEnd > 0) {
+      const packageName = afterNodeModules.slice(0, packageNameEnd);
+      // Path relative to project root: node_modules/packageName/dist/workers/worker.js
+      return `./node_modules/${packageName}/dist/workers/${workerName}.js`;
+    }
+  }
+
+  // Fallback: try to resolve using import.meta.resolve if available
+  try {
+    // Use the current file's directory as base
+    const baseDir = new URL(".", currentFile);
+    const workerUrl = new URL(`workers/${workerName}.js`, baseDir);
+    // Return as file path (Bun accepts file:// URLs or paths)
+    return workerUrl.pathname;
+  } catch {
+    // Final fallback: relative path from dist/
+    return `./dist/workers/${workerName}.js`;
+  }
+};
+
 interface QueueItem {
   jobId: string;
   url: string;
@@ -209,10 +252,9 @@ const createWorkerPool = (
   };
 
   const spawnWorker = (kind: WorkerKind): WorkerState => {
-    const workerPath =
-      kind === "markdown"
-        ? "./src/workers/markdown-worker.ts"
-        : "./src/workers/hybrid-html-worker.ts";
+    const workerFileName =
+      kind === "markdown" ? "markdown-worker" : "hybrid-html-worker";
+    const workerPath = resolveWorkerPath(workerFileName);
     const worker =
       kind === "markdown"
         ? new Worker(workerPath, { smol: true })
@@ -247,8 +289,22 @@ const createWorkerPool = (
       handleStopped(state.id);
     });
 
-    worker.addEventListener("error", (event) => {
-      logger.error(`Worker ${state.id} failed: ${String(event)}`);
+    worker.addEventListener("error", (event: ErrorEvent) => {
+      let errorMessage = "Unknown error";
+
+      if (event.error instanceof Error) {
+        errorMessage = event.error.message;
+      } else if (event.error) {
+        errorMessage = String(event.error);
+      } else if (event.message) {
+        errorMessage = event.message;
+      }
+
+      const errorDetails =
+        event.filename && event.lineno
+          ? ` at ${event.filename}:${event.lineno}:${event.colno ?? 0}`
+          : "";
+      logger.error(`Worker ${state.id} failed: ${errorMessage}${errorDetails}`);
       handleStopped(state.id);
     });
 
