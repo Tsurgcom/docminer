@@ -1,11 +1,11 @@
 {
-  "name": "aidocs",
+  "name": "docminer",
   "version": "0.1.0",
   "description": "Generate markdown docs from URLs via CLI.",
   "type": "module",
   "private": false,
   "bin": {
-    "aidocs": "./dist/cli.js"
+    "docminer": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
   "exports": {

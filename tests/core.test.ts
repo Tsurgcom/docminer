@@ -409,7 +409,9 @@ describe("link utilities", () => {
 
 describe("link-check command", () => {
   test("re-links cross-domain docs and removes external markers", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "aidocs-linkcheck-"));
+    const tempDir = await mkdtemp(
+      path.join(os.tmpdir(), "docminer-linkcheck-")
+    );
     try {
       const firstUrl = "https://one.example.com/docs/page";
       const secondUrl = "https://two.example.com/guide";

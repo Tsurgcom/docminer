@@ -1,4 +1,4 @@
-# aidocs
+# docminer
 
 Documentation scraper powered by Bun.
 
@@ -32,7 +32,7 @@ The crawler respects `robots.txt` and applies crawl-delay values unless you pass
 
 Outputs go to `.docs/<snake_domain>/<path>/page.md` with clutter saved to `.clutter.md` when you pass `--clutter`. Existing `.llms.md` and `llms-full.md` are left untouched unless you pass `--overwrite-llms`.
 
-When a `.md` version of a URL is available (for example, `https://example.com/docs.md` for `https://example.com/docs/`), aidocs will prefer it and skip headless rendering.
+When a `.md` version of a URL is available (for example, `https://example.com/docs.md` for `https://example.com/docs/`), docminer will prefer it and skip headless rendering.
 
 Common flags:
 

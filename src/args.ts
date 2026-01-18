@@ -45,18 +45,18 @@ export type ParseResult =
 export function printHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs [crawl]                   Crawl and scrape documentation (default)",
-    "  aidocs url <url> [options]       Scrape a single page",
-    "  aidocs urls <file> [options]     Scrape pages from a file",
-    "  aidocs find <query> [options]    Search scraped docs",
-    "  aidocs link-check [options]      Re-link saved docs",
+    "  docminer [crawl]                   Crawl and scrape documentation (default)",
+    "  docminer url <url> [options]       Scrape a single page",
+    "  docminer urls <file> [options]     Scrape pages from a file",
+    "  docminer find <query> [options]    Search scraped docs",
+    "  docminer link-check [options]      Re-link saved docs",
     "",
-    "Run 'aidocs <command> --help' for command-specific options.",
+    "Run 'docminer <command> --help' for command-specific options.",
     "",
     "Examples:",
-    "  aidocs https://example.com",
-    "  aidocs crawl https://example.com/docs -d 5",
-    '  aidocs find "hooks"',
+    "  docminer https://example.com",
+    "  docminer crawl https://example.com/docs -d 5",
+    '  docminer find "hooks"',
   ];
   console.info(lines.join("\n"));
   console.info("\n--------------------------------\n");
@@ -66,7 +66,7 @@ export function printHelp(): void {
 export function printCrawlHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs [crawl] <url> [options]",
+    "  docminer [crawl] <url> [options]",
     "",
     "Crawl a website starting from the given URL and scrape documentation.",
     "",
@@ -90,9 +90,9 @@ export function printCrawlHelp(): void {
     "  -h, --help               Show this help",
     "",
     "Examples:",
-    "  aidocs crawl https://example.com",
-    "  aidocs crawl https://example.com/docs -d 5 -p 100",
-    "  aidocs crawl https://react.dev --no-render -c 8",
+    "  docminer crawl https://example.com",
+    "  docminer crawl https://example.com/docs -d 5 -p 100",
+    "  docminer crawl https://react.dev --no-render -c 8",
   ];
   console.info(lines.join("\n"));
 }
@@ -100,8 +100,8 @@ export function printCrawlHelp(): void {
 export function printScrapeHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs url <url> [options]       (single page)",
-    "  aidocs urls <file> [options]     (list of pages)",
+    "  docminer url <url> [options]       (single page)",
+    "  docminer urls <file> [options]     (list of pages)",
     "",
     "Options:",
     `  -o, --output <path>      Output directory (default: ${DEFAULT_OPTIONS.outDir})`,
@@ -119,8 +119,8 @@ export function printScrapeHelp(): void {
     "  -h, --help               Show this help",
     "",
     "Examples:",
-    "  aidocs url https://example.com/about -v",
-    "  aidocs urls urls.txt -c 8 --no-render",
+    "  docminer url https://example.com/about -v",
+    "  docminer urls urls.txt -c 8 --no-render",
   ];
   console.info(lines.join("\n"));
 }
@@ -128,7 +128,7 @@ export function printScrapeHelp(): void {
 export function printFindHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs find <query> [options]",
+    "  docminer find <query> [options]",
     "",
     "Search through scraped documentation using fuzzy matching.",
     "",
@@ -142,10 +142,10 @@ export function printFindHelp(): void {
     "  -h, --help               Show this help",
     "",
     "Examples:",
-    '  aidocs find "catalogs"',
-    '  aidocs find "react hooks" --files-only',
-    '  aidocs find "api" -l 10 -C 4',
-    '  aidocs find "config" -d ./other-docs',
+    '  docminer find "catalogs"',
+    '  docminer find "react hooks" --files-only',
+    '  docminer find "api" -l 10 -C 4',
+    '  docminer find "config" -d ./other-docs',
   ];
   console.info(lines.join("\n"));
 }
@@ -153,7 +153,7 @@ export function printFindHelp(): void {
 export function printLinkCheckHelp(): void {
   const lines = [
     "Usage:",
-    "  aidocs link-check [options]",
+    "  docminer link-check [options]",
     "",
     "Scan saved docs and update links across outputs.",
     "",
@@ -164,8 +164,8 @@ export function printLinkCheckHelp(): void {
     "  -h, --help               Show this help",
     "",
     "Examples:",
-    "  aidocs link-check",
-    "  aidocs link-check -o ./other-docs",
+    "  docminer link-check",
+    "  docminer link-check -o ./other-docs",
   ];
   console.info(lines.join("\n"));
 }
