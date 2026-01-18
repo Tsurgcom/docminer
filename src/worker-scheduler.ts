@@ -71,8 +71,8 @@ const AUTOSCALE_TARGET_DRAIN_MS = 6000;
 const MAX_SPAWN_PER_TICK = 5;
 const MAX_STOP_PER_TICK = 5;
 const EWMA_ALPHA = 0.3;
-const DEFAULT_MARKDOWN_ACTIVE_MS = 700;
-const DEFAULT_HYBRID_ACTIVE_MS = 2200;
+const DEFAULT_MARKDOWN_ACTIVE_MS = 200;
+const DEFAULT_HYBRID_ACTIVE_MS = 600;
 const DEFAULT_MARKDOWN_UNAVAILABLE_RATE = 0.25;
 const BLOOM_BITS_PER_ITEM = 10;
 
@@ -1181,6 +1181,7 @@ export async function runCrawlWithWorkers(
       visited.add(normalized);
       if (!robotsPolicy.isAllowed(new URL(next.url).pathname)) {
         logger.logBlocked(next.url, "robots.txt");
+        logger.debug(`Blocked by robots.txt: ${next.url}`);
         jobMap.delete(next.jobId);
         logger.setProgressTotal(getDynamicTotal());
         maybeFinish();

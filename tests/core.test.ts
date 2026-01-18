@@ -170,6 +170,17 @@ Crawl-delay: 2
     expect(policy.crawlDelayMs).toBe(2000);
   });
 
+  test("missing allow", () => {
+    const robots = `
+User-agent: *
+Disallow: 
+`.trim();
+    const policy = parseRobotsTxt(robots, DEFAULT_OPTIONS.userAgent);
+    expect(policy.isAllowed("/")).toBe(true);
+    expect(policy.isAllowed("/other")).toBe(false);
+    expect(policy.crawlDelayMs).toBe(2000);
+  });
+
   test("normalize rule helper always prefixes slash", () => {
     const robots = "User-agent: *\nDisallow: private";
     const policy = parseRobotsTxt(robots, DEFAULT_OPTIONS.userAgent);

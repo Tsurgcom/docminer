@@ -508,11 +508,7 @@ class Logger {
   }
 
   private formatDuration(ms: number): string {
-    if (ms < 1000) {
-      return `${ms}ms`;
-    }
-
-    const seconds = Math.floor(ms / 1000);
+    const seconds = Math.max(1, Math.round(ms / 1000));
     if (seconds < 60) {
       return `${seconds}s`;
     }

@@ -6,14 +6,15 @@ export const DEFAULT_OPTIONS: CliOptions = {
   concurrency: 4,
   timeoutMs: 15_000,
   retries: 2,
-  userAgent: "aidocs-scraper/1.0",
+  userAgent:
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
   verbose: false,
   overwriteLlms: false,
   clutter: false,
   render: true,
   progress: true,
-  maxDepth: 5,
-  maxPages: 1000,
+  maxDepth: 4,
+  maxPages: 6000,
   delayMs: 150,
   respectRobots: true,
 };
