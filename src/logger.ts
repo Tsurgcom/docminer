@@ -561,9 +561,12 @@ class Logger {
   logPageSaved(url: string, depth?: number, agent?: string): void {
     const depthInfo =
       depth !== undefined ? ` ${ANSI.dim}(depth ${depth})${ANSI.reset}` : "";
-    const agentInfo = agent ? ` ${ANSI.dim}[${agent}]${ANSI.reset}` : "";
+    const agentInfo =
+      this.config.verbose && agent
+        ? ` ${ANSI.dim}[${agent}]${ANSI.reset}`
+        : undefined;
     this.success(
-      `Saved ${ANSI.cyan}${url}${ANSI.reset}${depthInfo}${agentInfo}`
+      `Saved ${ANSI.cyan}${url}${ANSI.reset}${depthInfo}${agentInfo ?? ""}`
     );
   }
 
