@@ -36,7 +36,7 @@ export const CLUTTER_SELECTORS = [
 ];
 
 export const BLOCKED_EXTENSIONS_REGEX =
-  /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|mp4|mp3|woff2?|ttf|eot)$/i;
+  /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|tar|gz|mp4|mp3|woff2?|ttf|eot|css|js)$/i;
 
 export const LINE_SPLIT_REGEX = /\r?\n/;
 const HEADING_TAG_REGEX = /^H([1-6])$/i;

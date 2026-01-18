@@ -45,6 +45,11 @@ export interface FindOptions {
   contextLines: number;
 }
 
+export interface LinkCheckOptions {
+  directory: string;
+  verbose: boolean;
+}
+
 export interface ContentMatch {
   lineNumber: number;
   line: string;

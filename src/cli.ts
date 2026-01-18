@@ -4,9 +4,11 @@ import {
   printCrawlHelp,
   printFindHelp,
   printHelp,
+  printLinkCheckHelp,
   printScrapeHelp,
 } from "./args";
 import { runFindCommand } from "./find";
+import { runLinkCheckCommand } from "./link-check";
 import { logger } from "./logger";
 import { runCliFlow } from "./scraper";
 
@@ -22,6 +24,19 @@ export async function main(): Promise<void> {
         return;
       }
       await runFindCommand(result.options);
+      return;
+    }
+
+    if (result.command === "link-check") {
+      if (result.showHelp) {
+        printLinkCheckHelp();
+        return;
+      }
+      logger.configure({
+        verbose: result.options.verbose,
+        showProgress: false,
+      });
+      await runLinkCheckCommand(result.options);
       return;
     }
 

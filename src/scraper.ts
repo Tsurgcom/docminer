@@ -1,13 +1,14 @@
 import { JSDOM } from "jsdom";
-import { extractContent } from "./content";
+import { extractContent, extractMarkdownContent } from "./content";
 import { loadUrls, writeOutputs } from "./io";
 import {
   extractLinksFromDom,
+  extractLinksFromMarkdown,
   resolveDocumentBaseUrl,
   rewriteLinksInResult,
 } from "./links";
 import { logger } from "./logger";
-import { getPageHtml } from "./network";
+import { fetchMarkdownIfAvailable, getPageHtml } from "./network";
 import { buildAllowAllPolicy, loadRobotsPolicy } from "./robots";
 import type { CliOptions, CrawlQueueItem } from "./types";
 import { normalizeForQueue, sleep } from "./utils";
@@ -17,6 +18,33 @@ export async function scrapeOne(
   options: CliOptions,
   knownUrls: Set<string>
 ): Promise<void> {
+  const markdownSource = await fetchMarkdownIfAvailable(targetUrl, {
+    timeoutMs: options.timeoutMs,
+    retries: options.retries,
+    userAgent: options.userAgent,
+    verbose: options.verbose,
+  });
+
+  if (markdownSource) {
+    logger.debug(
+      `Using markdown source ${markdownSource.markdownUrl} for ${targetUrl}`
+    );
+    const result = extractMarkdownContent(markdownSource.markdown, targetUrl);
+    const scopePathPrefix = new URL(targetUrl).pathname;
+    const rewritten = await rewriteLinksInResult(
+      result,
+      targetUrl,
+      options,
+      knownUrls,
+      undefined,
+      undefined,
+      scopePathPrefix
+    );
+    await writeOutputs(targetUrl, options, rewritten);
+    logger.logPageSaved(targetUrl);
+    return;
+  }
+
   const html = await getPageHtml(targetUrl, {
     timeoutMs: options.timeoutMs,
     retries: options.retries,
@@ -151,6 +179,55 @@ export async function crawlSite(
 
   logger.startProgress(getDynamicTotal());
 
+  const handleMarkdownSource = async (
+    markdownSource: { markdown: string; markdownUrl: string },
+    currentUrl: URL,
+    depth: number,
+    canGoDeeper: boolean
+  ): Promise<string[]> => {
+    logger.debug(
+      `Using markdown source ${markdownSource.markdownUrl} for ${currentUrl.toString()}`
+    );
+    const linkCandidates = canGoDeeper
+      ? extractLinksFromMarkdown(
+          markdownSource.markdown,
+          currentUrl,
+          scopeOrigin,
+          scopePathPrefix
+        )
+      : [];
+    const linkHints =
+      linkCandidates.length > 0
+        ? new Set(
+            linkCandidates.map((link) => normalizeForQueue(new URL(link)))
+          )
+        : undefined;
+
+    const result = extractMarkdownContent(
+      markdownSource.markdown,
+      currentUrl.toString()
+    );
+    const rewritten = await rewriteLinksInResult(
+      result,
+      currentUrl.toString(),
+      options,
+      knownUrls,
+      undefined,
+      linkHints,
+      scopePathPrefix
+    );
+    await writeOutputs(currentUrl.toString(), options, rewritten);
+    savedCount += 1;
+    logger.updateProgress(savedCount, currentUrl.toString(), getDynamicTotal());
+    logger.logPageSaved(currentUrl.toString(), depth);
+
+    if (!canGoDeeper) {
+      return [];
+    }
+
+    return linkCandidates;
+  };
+
   const processItem = async (item: CrawlQueueItem): Promise<string[]> => {
     const normalized = normalizeForQueue(new URL(item.url));
     if (visited.has(normalized)) {
@@ -159,6 +236,7 @@ export async function crawlSite(
     visited.add(normalized);
 
     const currentUrl = new URL(item.url);
+    const canGoDeeper = item.depth < options.maxDepth;
     if (!robotsPolicy.isAllowed(currentUrl.pathname)) {
       logger.logBlocked(currentUrl.toString(), "robots.txt");
       return [];
@@ -166,6 +244,25 @@ export async function crawlSite(
 
     await rateLimit();
     logger.updateProgress(savedCount, currentUrl.toString(), getDynamicTotal());
+
+    const markdownSource = await fetchMarkdownIfAvailable(
+      currentUrl.toString(),
+      {
+        timeoutMs: options.timeoutMs,
+        retries: options.retries,
+        userAgent: options.userAgent,
+        verbose: options.verbose,
+      }
+    );
+
+    if (markdownSource) {
+      return await handleMarkdownSource(
+        markdownSource,
+        currentUrl,
+        item.depth,
+        canGoDeeper
+      );
+    }
 
     let html: string;
     try {
@@ -187,7 +284,6 @@ export async function crawlSite(
     const dom = new JSDOM(html, { url: currentUrl.toString() });
     const document = dom.window.document;
     const linkBaseUrl = resolveDocumentBaseUrl(document, currentUrl);
-    const canGoDeeper = item.depth < options.maxDepth;
     const linkCandidates = canGoDeeper
       ? extractLinksFromDom(document, currentUrl, scopeOrigin, scopePathPrefix)
       : [];

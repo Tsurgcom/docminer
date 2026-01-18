@@ -1,20 +1,35 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { parseArgs } from "../src/args";
 import { DEFAULT_OPTIONS, turndownService } from "../src/constants";
+import { extractMarkdownContent } from "../src/content";
+import { runLinkCheckCommand } from "../src/link-check";
 import {
   extractLinks,
+  extractLinksFromMarkdown,
   normalizeHrefTarget,
   rewriteLinksInMarkdown,
+  rewriteMarkdownContent,
 } from "../src/links";
+import { buildMarkdownCandidateUrl } from "../src/network";
 import { parseRobotsTxt } from "../src/robots";
 import {
   buildOutputPaths,
+  ensureDir,
   isHtmlCandidate,
   isPathInScope,
   normalizeForQueue,
   parsePositiveInt,
   sanitizeSegment,
 } from "../src/utils";
+
+const HEADING_REGEX = /^#\s+/gm;
+const LLMS_LABEL_REGEX = /\[https:\/\/bun\.com\/docs\/llms\.txt\]/g;
+const TABLE_HEADER_REGEX = /\|\s*Col\s*\|/;
+const TABLE_SEPARATOR_REGEX = /\|\s*-+\s*\|/;
+const TABLE_VALUE_REGEX = /\|\s*Val\s*\|/;
 
 describe("utility helpers", () => {
   test("parsePositiveInt falls back on invalid input", () => {
@@ -48,6 +63,10 @@ describe("utility helpers", () => {
 
   test("isHtmlCandidate filters blocked extensions", () => {
     expect(isHtmlCandidate(new URL("https://example.com/image.png"))).toBe(
+      false
+    );
+    expect(isHtmlCandidate(new URL("https://example.com/app.js"))).toBe(false);
+    expect(isHtmlCandidate(new URL("https://example.com/styles.css"))).toBe(
       false
     );
     expect(isHtmlCandidate(new URL("https://example.com/about"))).toBe(true);
@@ -93,6 +112,33 @@ describe("argument parsing", () => {
     const { showHelp } = parseArgs(["--help"]);
     expect(showHelp).toBe(true);
   });
+
+  test("supports clutter toggle flags", () => {
+    const crawlResult = parseArgs([
+      "crawl",
+      "https://example.com",
+      "--clutter",
+    ]);
+    expect(crawlResult.command).toBe("crawl");
+    if (crawlResult.command === "crawl") {
+      expect(crawlResult.options.clutter).toBe(true);
+    }
+
+    const scrapeResult = parseArgs(["https://example.com", "--no-clutter"]);
+    expect(scrapeResult.command).toBe("scrape");
+    if (scrapeResult.command === "scrape") {
+      expect(scrapeResult.options.clutter).toBe(false);
+    }
+  });
+
+  test("parses link-check options", () => {
+    const result = parseArgs(["link-check", "-o", "./docs", "--verbose"]);
+    expect(result.command).toBe("link-check");
+    if (result.command === "link-check") {
+      expect(result.options.directory).toBe("./docs");
+      expect(result.options.verbose).toBe(true);
+    }
+  });
 });
 
 describe("robots parsing", () => {
@@ -116,6 +162,51 @@ Crawl-delay: 2
   });
 });
 
+describe("markdown sources", () => {
+  test("buildMarkdownCandidateUrl prefers llms.txt for roots", () => {
+    expect(buildMarkdownCandidateUrl("https://bun.com/")).toBe(
+      "https://bun.com/llms.txt"
+    );
+    expect(buildMarkdownCandidateUrl("https://bun.com")).toBe(
+      "https://bun.com/llms.txt"
+    );
+  });
+
+  test("buildMarkdownCandidateUrl appends .md when missing", () => {
+    expect(buildMarkdownCandidateUrl("https://bun.com/docs")).toBe(
+      "https://bun.com/docs.md"
+    );
+    expect(buildMarkdownCandidateUrl("https://bun.com/docs/")).toBe(
+      "https://bun.com/docs.md"
+    );
+    expect(buildMarkdownCandidateUrl("https://bun.com/docs/readme.md")).toBe(
+      "https://bun.com/docs/readme.md"
+    );
+    expect(buildMarkdownCandidateUrl("https://bun.com/docs/llms.txt")).toBe(
+      "https://bun.com/docs/llms.txt"
+    );
+  });
+
+  test("extractMarkdownContent avoids duplicate headings", () => {
+    const result = extractMarkdownContent(
+      "# Title\n\nBody",
+      "https://example.com/docs"
+    );
+    const headings = result.markdown.match(HEADING_REGEX) ?? [];
+    expect(headings.length).toBe(1);
+    expect(result.markdown).toContain("# Title");
+  });
+
+  test("extractMarkdownContent adds title when missing", () => {
+    const result = extractMarkdownContent(
+      "Body only",
+      "https://example.com/docs"
+    );
+    expect(result.markdown).toContain("# https://example.com/docs");
+    expect(result.markdown).toContain("Body only");
+  });
+});
+
 describe("link utilities", () => {
   test("normalizeHrefTarget ignores unsupported protocols", () => {
     expect(
@@ -126,9 +217,18 @@ describe("link utilities", () => {
     ).toBe("https://example.com/docs");
   });
 
+  test("normalizeHrefTarget drops anchors for queueing", () => {
+    expect(
+      normalizeHrefTarget(
+        "https://example.com/docs/page#section",
+        "https://example.com"
+      )?.toString()
+    ).toBe("https://example.com/docs/page");
+  });
+
   test("extractLinks respects scope and blocked extensions", () => {
     const html =
-      '<a href="/in-scope/page">in</a><a href="https://other.com">out</a><a href="/skip.png">img</a>';
+      '<a href="/in-scope/page">in</a><a href="https://other.com">out</a><a href="/skip.png">img</a><a href="/app.js">js</a>';
     const links = extractLinks(
       html,
       new URL("https://example.com/root/index"),
@@ -136,6 +236,28 @@ describe("link utilities", () => {
       "/"
     );
     expect(links).toEqual(["https://example.com/in-scope/page"]);
+  });
+
+  test("extractLinksFromMarkdown resolves scoped href attributes", () => {
+    const markdown = '<Card href="/runtime">Runtime</Card>';
+    const links = extractLinksFromMarkdown(
+      markdown,
+      new URL("https://bun.com/docs"),
+      "https://bun.com",
+      "/docs"
+    );
+    expect(links).toEqual(["https://bun.com/docs/runtime"]);
+  });
+
+  test("extractLinksFromMarkdown strips hashes from links", () => {
+    const markdown = "[Section](https://example.com/docs/page#anchor)";
+    const links = extractLinksFromMarkdown(
+      markdown,
+      new URL("https://example.com/docs"),
+      "https://example.com",
+      "/docs"
+    );
+    expect(links).toEqual(["https://example.com/docs/page"]);
   });
 
   test("rewriteLinksInMarkdown rewrites known links to relative paths", async () => {
@@ -152,6 +274,156 @@ describe("link utilities", () => {
     );
     expect(rewritten).toBe("[Doc](overview/page.md)");
   });
+
+  test("rewriteMarkdownContent preserves anchors and avoids nested links", async () => {
+    const options = { ...DEFAULT_OPTIONS, outDir: "out" };
+    const knownUrls = new Set<string>([
+      normalizeForQueue(new URL("https://bun.com/docs/llms.txt")),
+    ]);
+    const markdown = [
+      "---",
+      "Source: https://bun.com/docs/test/index",
+      "Fetched: 2026-01-18T12:00:00.000Z",
+      "---",
+      "",
+      "> To find navigation and other pages, fetch https://bun.com/docs/llms.txt",
+      "",
+      "[Section](https://bun.com/docs/llms.txt#nav)",
+    ].join("\n");
+
+    const rewritten = await rewriteMarkdownContent(
+      markdown,
+      "https://bun.com/docs/test/index",
+      options,
+      knownUrls,
+      undefined,
+      undefined,
+      "/docs"
+    );
+
+    expect(rewritten).toContain(
+      "[https://bun.com/docs/llms.txt](../../llms_txt/page.md)"
+    );
+    expect(rewritten).toContain("[Section](../../llms_txt/page.md#nav)");
+    expect(rewritten).not.toContain("[[[[");
+  });
+
+  test("rewriteMarkdownContent keeps Source metadata plain", async () => {
+    const options = { ...DEFAULT_OPTIONS, outDir: "out" };
+    const markdown = [
+      "---",
+      "Source: [https://bun.com/docs/index](page.md)",
+      "Fetched: 2026-01-18T12:00:00.000Z",
+      "---",
+      "",
+      "Body",
+    ].join("\n");
+
+    const rewritten = await rewriteMarkdownContent(
+      markdown,
+      "https://bun.com/docs/index",
+      options,
+      new Set<string>()
+    );
+
+    expect(rewritten).toContain("Source: https://bun.com/docs/index");
+    expect(rewritten).toContain("Body");
+    expect(rewritten).not.toContain("Source: [");
+  });
+
+  test("rewriteMarkdownContent marks external links and removes marker when linked", async () => {
+    const options = { ...DEFAULT_OPTIONS, outDir: "out" };
+    const externalMarkdown = "[External](https://other.com/page)";
+    const externalRewritten = await rewriteMarkdownContent(
+      externalMarkdown,
+      "https://bun.com/docs",
+      options,
+      new Set<string>()
+    );
+    expect(externalRewritten).toBe("[External ↗](https://other.com/page)");
+
+    const knownUrls = new Set<string>([
+      normalizeForQueue(new URL("https://two.com/guide")),
+    ]);
+    const linkedMarkdown = "[Guide ↗](https://two.com/guide)";
+    const linkedRewritten = await rewriteMarkdownContent(
+      linkedMarkdown,
+      "https://one.com/docs/page",
+      options,
+      knownUrls
+    );
+    expect(linkedRewritten).toContain("[Guide](");
+    expect(linkedRewritten).not.toContain("↗");
+    expect(linkedRewritten).toContain("two_com/guide/page.md");
+  });
+
+  test("rewriteMarkdownContent does not re-link already linked URLs", async () => {
+    const options = { ...DEFAULT_OPTIONS, outDir: "out" };
+    const markdown = [
+      "---",
+      "Source: https://bun.com/docs/test/index",
+      "Fetched: 2026-01-18T12:00:00.000Z",
+      "---",
+      "",
+      "> [https://bun.com/docs/llms.txt](../../llms_txt/page.md)",
+    ].join("\n");
+    const knownUrls = new Set<string>([
+      normalizeForQueue(new URL("https://bun.com/docs/llms.txt")),
+    ]);
+    const rewritten = await rewriteMarkdownContent(
+      markdown,
+      "https://bun.com/docs/test/index",
+      options,
+      knownUrls
+    );
+    expect(rewritten.match(LLMS_LABEL_REGEX)?.length).toBe(1);
+    expect(rewritten).not.toContain("[[[");
+  });
+});
+
+describe("link-check command", () => {
+  test("re-links cross-domain docs and removes external markers", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "aidocs-linkcheck-"));
+    try {
+      const firstUrl = "https://one.example.com/docs/page";
+      const secondUrl = "https://two.example.com/guide";
+      const firstPaths = buildOutputPaths(firstUrl, tempDir);
+      const secondPaths = buildOutputPaths(secondUrl, tempDir);
+
+      await ensureDir(firstPaths.dir);
+      await ensureDir(secondPaths.dir);
+
+      const firstContent = [
+        "---",
+        `Source: ${firstUrl}`,
+        "Fetched: 2026-01-18T12:00:00.000Z",
+        "---",
+        "",
+        `[Other ↗](${secondUrl})`,
+      ].join("\n");
+
+      const secondContent = [
+        "---",
+        `Source: ${secondUrl}`,
+        "Fetched: 2026-01-18T12:00:00.000Z",
+        "---",
+        "",
+        "Body",
+      ].join("\n");
+
+      await writeFile(firstPaths.pagePath, firstContent, "utf8");
+      await writeFile(secondPaths.pagePath, secondContent, "utf8");
+
+      await runLinkCheckCommand({ directory: tempDir, verbose: false });
+
+      const updated = await readFile(firstPaths.pagePath, "utf8");
+      expect(updated).toContain("[Other](");
+      expect(updated).not.toContain("↗");
+      expect(updated).toContain("two_example_com/guide/page.md");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("turndown formatting", () => {
@@ -167,5 +439,14 @@ describe("turndown formatting", () => {
       '<a href="https://example.com"><h2>Sub</h2><h1>Main</h1></a>'
     );
     expect(markdown).toBe("# [Sub Main](https://example.com)");
+  });
+
+  test("converts tables to markdown", () => {
+    const markdown = turndownService.turndown(
+      "<table><thead><tr><th>Col</th></tr></thead><tbody><tr><td>Val</td></tr></tbody></table>"
+    );
+    expect(markdown).toMatch(TABLE_HEADER_REGEX);
+    expect(markdown).toMatch(TABLE_SEPARATOR_REGEX);
+    expect(markdown).toMatch(TABLE_VALUE_REGEX);
   });
 });

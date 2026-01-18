@@ -1,6 +1,6 @@
 import { DEFAULT_OPTIONS } from "./constants";
 import { logger } from "./logger";
-import type { CliOptions, FindOptions } from "./types";
+import type { CliOptions, FindOptions, LinkCheckOptions } from "./types";
 import { parsePositiveInt } from "./utils";
 
 export const DEFAULT_FIND_OPTIONS: FindOptions = {
@@ -30,10 +30,17 @@ export interface FindParseResult {
   showHelp: boolean;
 }
 
+export interface LinkCheckParseResult {
+  command: "link-check";
+  options: LinkCheckOptions;
+  showHelp: boolean;
+}
+
 export type ParseResult =
   | CrawlParseResult
   | ScrapeParseResult
-  | FindParseResult;
+  | FindParseResult
+  | LinkCheckParseResult;
 
 export function printHelp(): void {
   const lines = [
@@ -42,6 +49,7 @@ export function printHelp(): void {
     "  aidocs url <url> [options]       Scrape a single page",
     "  aidocs urls <file> [options]     Scrape pages from a file",
     "  aidocs find <query> [options]    Search scraped docs",
+    "  aidocs link-check [options]      Re-link saved docs",
     "",
     "Run 'aidocs <command> --help' for command-specific options.",
     "",
@@ -138,6 +146,26 @@ export function printFindHelp(): void {
     '  aidocs find "react hooks" --files-only',
     '  aidocs find "api" -l 10 -C 4',
     '  aidocs find "config" -d ./other-docs',
+  ];
+  console.info(lines.join("\n"));
+}
+
+export function printLinkCheckHelp(): void {
+  const lines = [
+    "Usage:",
+    "  aidocs link-check [options]",
+    "",
+    "Scan saved docs and update links across outputs.",
+    "",
+    "Options:",
+    "  -o, --output <path>      Docs directory (default: .docs)",
+    "  -v, --[no-]verbose       Enable/disable verbose logging (default: off)",
+    "",
+    "  -h, --help               Show this help",
+    "",
+    "Examples:",
+    "  aidocs link-check",
+    "  aidocs link-check -o ./other-docs",
   ];
   console.info(lines.join("\n"));
 }
@@ -247,6 +275,87 @@ function parseFindArgs(args: string[]): FindParseResult {
   }
 
   return { command: "find", options: opts, showHelp };
+}
+
+function parseLinkCheckArgs(args: string[]): LinkCheckParseResult {
+  const opts: LinkCheckOptions = {
+    directory: DEFAULT_OPTIONS.outDir,
+    verbose: DEFAULT_OPTIONS.verbose,
+  };
+  let showHelp = false;
+
+  const iterator = args[Symbol.iterator]();
+  const positionalArgs: string[] = [];
+
+  const consumeNext = (valueFromEq: string | undefined): string | undefined => {
+    if (valueFromEq) {
+      return valueFromEq;
+    }
+    const next = iterator.next();
+    return next.done ? undefined : next.value;
+  };
+
+  const flagDefinitions: FlagDefinition[] = [
+    {
+      handler: (v) => {
+        opts.directory = consumeNext(v) ?? DEFAULT_OPTIONS.outDir;
+      },
+      aliases: [
+        "-o",
+        "--output",
+        "--out-dir",
+        "--outdir",
+        "-d",
+        "--directory",
+        "--dir",
+      ],
+    },
+    {
+      handler: () => {
+        opts.verbose = true;
+      },
+      aliases: ["-v", "--verbose"],
+    },
+    {
+      handler: () => {
+        opts.verbose = false;
+      },
+      aliases: ["--no-verbose"],
+    },
+    {
+      handler: () => {
+        showHelp = true;
+      },
+      aliases: ["-h", "--help"],
+    },
+  ];
+
+  const handlers = new Map<string, FlagHandler>();
+  for (const def of flagDefinitions) {
+    if (def.aliases) {
+      for (const alias of def.aliases) {
+        handlers.set(alias, def.handler);
+      }
+    }
+  }
+
+  for (const arg of iterator) {
+    const [flag, valueFromEq] = arg.split("=", 2);
+    const normalizedFlag = flag?.toLowerCase();
+    const handler = handlers.get(normalizedFlag ?? "");
+
+    if (handler) {
+      handler(valueFromEq);
+    } else {
+      positionalArgs.push(arg);
+    }
+  }
+
+  if (positionalArgs.length > 0) {
+    logger.warn(`Ignoring positional arguments: ${positionalArgs.join(", ")}`);
+  }
+
+  return { command: "link-check", options: opts, showHelp };
 }
 
 function parseCrawlArgs(args: string[]): CrawlParseResult {
@@ -454,6 +563,10 @@ export function parseArgs(args: string[]): ParseResult {
   // Check if first argument is "find" command
   if (normalizedFirst === "find") {
     return parseFindArgs(args.slice(1));
+  }
+
+  if (normalizedFirst === "link-check" || normalizedFirst === "linkcheck") {
+    return parseLinkCheckArgs(args.slice(1));
   }
 
   // Check if first argument is "crawl" command

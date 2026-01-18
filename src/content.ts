@@ -1,7 +1,13 @@
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
-import { CLUTTER_SELECTORS, turndownService } from "./constants";
+import {
+  CLUTTER_SELECTORS,
+  LINE_SPLIT_REGEX,
+  turndownService,
+} from "./constants";
 import type { ScrapeResult } from "./types";
+
+const MARKDOWN_TITLE_REGEX = /^#{1,6}\s+(.+?)\s*$/m;
 
 export interface ContentDomContext {
   readabilityDom?: JSDOM;
@@ -73,13 +79,7 @@ export function extractContent(
   const llmsMarkdown = markdownBody;
   const llmsFullMarkdown = turndownService.turndown(html);
 
-  const header = [
-    "---",
-    `Source: ${targetUrl}`,
-    `Fetched: ${new Date().toISOString()}`,
-    "---\n",
-    `# ${title}\n`,
-  ].join("\n");
+  const header = buildHeader(targetUrl, title);
 
   return {
     markdown: `${header}${markdownBody}\n`,
@@ -87,4 +87,65 @@ export function extractContent(
     llmsMarkdown: `${header}${llmsMarkdown}\n`,
     llmsFullMarkdown: `${header}${llmsFullMarkdown}\n`,
   };
+}
+
+function buildHeader(targetUrl: string, title: string): string {
+  return [
+    "---",
+    `Source: ${targetUrl}`,
+    `Fetched: ${new Date().toISOString()}`,
+    "---\n",
+    `# ${title}\n`,
+  ].join("\n");
+}
+
+function findMarkdownTitle(markdown: string): string | null {
+  const match = markdown.match(MARKDOWN_TITLE_REGEX);
+  return match ? (match[1]?.trim() ?? null) : null;
+}
+
+function getFirstNonEmptyLine(markdown: string): string | null {
+  const lines = markdown.split(LINE_SPLIT_REGEX);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function hasLeadingHeading(markdown: string): boolean {
+  const firstLine = getFirstNonEmptyLine(markdown);
+  return firstLine ? MARKDOWN_TITLE_REGEX.test(firstLine) : false;
+}
+
+export function extractMarkdownContent(
+  markdown: string,
+  targetUrl: string
+): ScrapeResult {
+  const body = markdown.trim();
+  const hasTitle = hasLeadingHeading(body);
+  const title = findMarkdownTitle(body) ?? targetUrl;
+  const header = hasTitle
+    ? buildFrontmatter(targetUrl)
+    : `${buildFrontmatter(targetUrl)}# ${title}\n\n`;
+  const combined = body.length > 0 ? `${header}${body}\n` : header;
+
+  return {
+    markdown: combined,
+    clutterMarkdown: "",
+    llmsMarkdown: combined,
+    llmsFullMarkdown: combined,
+  };
+}
+
+function buildFrontmatter(targetUrl: string): string {
+  return [
+    "---",
+    `Source: ${targetUrl}`,
+    `Fetched: ${new Date().toISOString()}`,
+    "---",
+    "",
+  ].join("\n");
 }
