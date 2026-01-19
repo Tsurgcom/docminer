@@ -132,8 +132,11 @@ describe("argument parsing", () => {
   });
 
   test("returns help flag when --help is provided", () => {
-    const { showHelp } = parseArgs(["--help"]);
-    expect(showHelp).toBe(true);
+    const result = parseArgs(["--help"]);
+    expect(result.command).toBe("scrape");
+    if (result.command === "scrape") {
+      expect(result.showHelp).toBe(true);
+    }
   });
 
   test("supports clutter toggle flags", () => {
