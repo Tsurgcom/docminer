@@ -1,12 +1,12 @@
 {
   "name": "docminer",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Generate markdown docs from URLs via CLI. Good for AI.",
   "license": "MIT",
   "type": "module",
   "private": false,
   "bin": {
-    "docminer": "./dist/cli.js"
+    "docminer": "dist/cli.js"
   },
   "main": "./dist/cli.js",
   "exports": {
@@ -16,13 +16,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/tsurgcom/docminer.git"
+    "url": "git+https://github.com/tsurgcom/docminer.git"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/cli.ts ./src/scraper.ts ./src/workers/markdown-worker.ts ./src/workers/hybrid-html-worker.ts --outdir dist --target bun --format esm --sourcemap --external playwright --external playwright-core --external chromium-bidi --external electron",
+    "build": "bun build ./src/cli.ts ./src/scraper.ts ./src/workers/markdown-worker.ts ./src/workers/hybrid-html-worker.ts --outdir dist --target node --format esm --sourcemap --external playwright --external playwright-core --external chromium-bidi --external electron",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "lint": "bun x ultracite check",
@@ -39,7 +39,6 @@
     "ai"
   ],
   "engines": {
-    "node": ">=18.0.0",
     "bun": ">=3.5.0"
   },
   "devDependencies": {

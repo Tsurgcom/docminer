@@ -22,34 +22,16 @@ const resolveWorkerPath = (workerName: string): string => {
     return `./src/workers/${workerName}.ts`;
   }
 
-  // In production (when installed from npm)
-  // Bun resolves paths relative to project root, but we need to find the package location
-  // Try to detect if we're in node_modules and construct the path accordingly
-  const isInNodeModules = currentFile.includes("/node_modules/");
-
-  if (isInNodeModules) {
-    // Extract package path from node_modules
-    const nodeModulesIndex = currentFile.indexOf("/node_modules/");
-    const afterNodeModules = currentFile.slice(
-      nodeModulesIndex + "/node_modules/".length
-    );
-    const packageNameEnd = afterNodeModules.indexOf("/");
-    if (packageNameEnd > 0) {
-      const packageName = afterNodeModules.slice(0, packageNameEnd);
-      // Path relative to project root: node_modules/packageName/dist/workers/worker.js
-      return `./node_modules/${packageName}/dist/workers/${workerName}.js`;
-    }
-  }
-
-  // Fallback: try to resolve using import.meta.resolve if available
+  // In production: resolve workers relative to the current file location
+  // This works for both local dist/ and npm installations
   try {
     // Use the current file's directory as base
     const baseDir = new URL(".", currentFile);
     const workerUrl = new URL(`workers/${workerName}.js`, baseDir);
-    // Return as file path (Bun accepts file:// URLs or paths)
+    // Return as file path (works in both Bun and Node.js)
     return workerUrl.pathname;
   } catch {
-    // Final fallback: relative path from dist/
+    // Fallback: relative path from dist/
     return `./dist/workers/${workerName}.js`;
   }
 };
