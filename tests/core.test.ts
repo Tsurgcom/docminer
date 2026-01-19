@@ -123,9 +123,20 @@ describe("argument parsing", () => {
     expect(options.crawlStart).toBeUndefined();
   });
 
-  test("returns help flag when --help is provided", () => {
-    const { showHelp } = parseArgs(["--help"]);
+  test("returns help when target keyword provided without value", () => {
+    const { showHelp, options } = ensureScrape(parseArgs(["url"]));
     expect(showHelp).toBe(true);
+    expect(options.url).toBeUndefined();
+    expect(options.urlsFile).toBeUndefined();
+    expect(options.crawlStart).toBeUndefined();
+  });
+
+  test("returns help flag when --help is provided", () => {
+    const result = parseArgs(["--help"]);
+    expect(result.command).toBe("scrape");
+    if (result.command === "scrape") {
+      expect(result.showHelp).toBe(true);
+    }
   });
 
   test("supports clutter toggle flags", () => {

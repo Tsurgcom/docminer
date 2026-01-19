@@ -220,13 +220,13 @@
     ],
 
     "@exodus/bytes": [
-      "@exodus/bytes@1.8.0",
+      "@exodus/bytes@1.9.0",
       "",
       {
-        "peerDependencies": { "@exodus/crypto": "^1.0.0-rc.4" },
-        "optionalPeers": ["@exodus/crypto"]
+        "peerDependencies": { "@noble/hashes": "^1.8.0 || ^2.0.0" },
+        "optionalPeers": ["@noble/hashes"]
       },
-      "sha512-8JPn18Bcp8Uo1T82gR8lh2guEOa5KKU/IEKvvdp0sgmi7coPBWf1Doi1EXsGZb2ehc8ym/StJCjffYV+ne7sXQ=="
+      "sha512-lagqsvnk09NKogQaN/XrtlWeUF8SRhT12odMvbTIIaVObqzwAogL6jhR4DAp0gPuKoM1AOVrKUshJpRdpMFrww=="
     ],
 
     "@isaacs/balanced-match": [
