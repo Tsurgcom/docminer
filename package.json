@@ -1,6 +1,6 @@
 {
   "name": "docminer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Generate markdown docs from URLs via CLI. Good for AI.",
   "license": "MIT",
   "type": "module",
@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/cli.ts ./src/scraper.ts --outdir dist --target bun --format esm --sourcemap --external playwright --external playwright-core --external chromium-bidi --external electron",
+    "build": "bun build ./src/cli.ts ./src/scraper.ts ./src/workers/markdown-worker.ts ./src/workers/hybrid-html-worker.ts --outdir dist --target bun --format esm --sourcemap --external playwright --external playwright-core --external chromium-bidi --external electron",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "lint": "bun x ultracite check",
