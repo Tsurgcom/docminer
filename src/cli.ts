@@ -18,6 +18,12 @@ export async function main(): Promise<void> {
   try {
     const result = parseArgs(argv);
 
+    if (result.command === "version") {
+      const { version } = require("../package.json");
+      console.log(version);
+      return;
+    }
+
     if (result.command === "find") {
       if (result.showHelp) {
         printFindHelp();
