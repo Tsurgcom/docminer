@@ -4,6 +4,7 @@ import {
   printCrawlHelp,
   printFindHelp,
   printHelp,
+  printInstallPlaywrightHelp,
   printLinkCheckHelp,
   printScrapeHelp,
 } from "./args";
@@ -11,6 +12,7 @@ import { runFindCommand } from "./find";
 import { runLinkCheckCommand } from "./link-check";
 import { logger } from "./logger";
 import { packageVersion } from "./package-info";
+import { runPlaywrightInstall } from "./playwright-install";
 import { isMainModule } from "./runtime";
 import { runCliFlow } from "./scraper";
 
@@ -22,6 +24,20 @@ export async function main(): Promise<void> {
 
     if (result.command === "version") {
       console.log(packageVersion);
+      return;
+    }
+
+    if (result.command === "install-playwright") {
+      if (result.showHelp) {
+        printInstallPlaywrightHelp();
+        return;
+      }
+      try {
+        await runPlaywrightInstall(result.args);
+      } catch (error) {
+        logger.error(String(error));
+        process.exitCode = 1;
+      }
       return;
     }
 

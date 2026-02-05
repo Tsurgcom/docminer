@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
+  Worker as NodeWorker,
   type WorkerOptions as NodeWorkerOptions,
-  Worker,
 } from "node:worker_threads";
 import { BloomFilter, type BloomFilterInit } from "./bloom";
 import { logger } from "./logger";
@@ -21,8 +21,12 @@ const resolveWorkerUrl = (workerName: string): URL => {
   return new URL(`./workers/${workerName}.${extension}`, import.meta.url);
 };
 
-const buildWorkerOptions = (): NodeWorkerOptions => {
-  const options: NodeWorkerOptions = { type: "module" };
+type WorkerOptionsWithType = NodeWorkerOptions & {
+  type?: "module";
+};
+
+const buildWorkerOptions = (): WorkerOptionsWithType => {
+  const options: WorkerOptionsWithType = { type: "module" };
   if (process.execArgv.length > 0) {
     options.execArgv = process.execArgv;
   }
@@ -40,7 +44,7 @@ interface QueueItem {
 interface WorkerState {
   id: string;
   kind: WorkerKind;
-  worker: Worker;
+  worker: NodeWorker;
   idle: boolean;
   stopping: boolean;
   currentJobId: string | null;
@@ -230,7 +234,7 @@ const createWorkerPool = (
     const workerFileName =
       kind === "markdown" ? "markdown-worker" : "hybrid-html-worker";
     const workerUrl = resolveWorkerUrl(workerFileName);
-    const worker = new Worker(workerUrl, buildWorkerOptions());
+    const worker = new NodeWorker(workerUrl, buildWorkerOptions());
     const id = randomUUID();
     const state: WorkerState = {
       id,

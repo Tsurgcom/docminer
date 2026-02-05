@@ -11,6 +11,14 @@ npm i -g docminer
 # or: bun i -g docminer
 ```
 
+## Playwright setup (optional)
+
+Headless rendering uses Playwright. Install the browsers once:
+
+```bash
+docminer install-playwright
+```
+
 ## Usage
 
 Default crawl a site (stays within the starting path):

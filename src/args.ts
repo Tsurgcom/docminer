@@ -47,12 +47,19 @@ export interface VersionParseResult {
   showVersion: true;
 }
 
+export interface InstallPlaywrightParseResult {
+  command: "install-playwright";
+  showHelp: boolean;
+  args: string[];
+}
+
 export type ParseResult =
   | CrawlParseResult
   | ScrapeParseResult
   | FindParseResult
   | LinkCheckParseResult
-  | VersionParseResult;
+  | VersionParseResult
+  | InstallPlaywrightParseResult;
 
 // ============================================================================
 // COMMANDS DEFINITION
@@ -432,6 +439,7 @@ export function printHelp(): void {
     "  docminer urls <file> [options]     Scrape pages from a file",
     "  docminer find <query> [options]    Search scraped docs",
     "  docminer link-check [options]      Re-link saved docs",
+    "  docminer install-playwright        Install Playwright browsers",
     "",
     "Run 'docminer <command> --help' for command-specific options.",
     "",
@@ -661,6 +669,17 @@ export function parseArgs(args: string[]): ParseResult {
 
   const firstArg = args[0];
   const normalizedFirst = firstArg?.toLowerCase();
+
+  if (
+    normalizedFirst === "install-playwright" ||
+    normalizedFirst === "playwright-install"
+  ) {
+    const helpFlags = new Set(["-h", "--help"]);
+    const restArgs = args.slice(1);
+    const showHelp = restArgs.some((arg) => helpFlags.has(arg));
+    const extraArgs = restArgs.filter((arg) => !helpFlags.has(arg));
+    return { command: "install-playwright", showHelp, args: extraArgs };
+  }
 
   // Check if first argument is a command
   if (normalizedFirst === "find") {
@@ -1012,4 +1031,21 @@ export function printFindHelp(): void {
 
 export function printLinkCheckHelp(): void {
   printCommandHelp("link-check");
+}
+
+export function printInstallPlaywrightHelp(): void {
+  const lines = [
+    "Usage:",
+    "  docminer install-playwright [options] [browser...]",
+    "",
+    "Install Playwright browsers for headless rendering.",
+    "",
+    "Options:",
+    "  -h, --help               Show this help",
+    "",
+    "Examples:",
+    "  docminer install-playwright",
+    "  docminer install-playwright chromium",
+  ];
+  console.info(lines.join("\n"));
 }

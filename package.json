@@ -1,6 +1,6 @@
 {
   "name": "docminer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Generate markdown docs from URLs via CLI. Good for AI.",
   "license": "MIT",
   "type": "module",
