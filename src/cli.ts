@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import {
   parseArgs,
   printCrawlHelp,
@@ -10,6 +10,8 @@ import {
 import { runFindCommand } from "./find";
 import { runLinkCheckCommand } from "./link-check";
 import { logger } from "./logger";
+import { packageVersion } from "./package-info";
+import { isMainModule } from "./runtime";
 import { runCliFlow } from "./scraper";
 
 const argv = process.argv.slice(2);
@@ -19,8 +21,7 @@ export async function main(): Promise<void> {
     const result = parseArgs(argv);
 
     if (result.command === "version") {
-      const { version } = require("../package.json");
-      console.log(version);
+      console.log(packageVersion);
       return;
     }
 
@@ -88,6 +89,6 @@ export async function main(): Promise<void> {
   }
 }
 
-if (import.meta.main) {
+if (isMainModule(import.meta.url)) {
   main();
 }

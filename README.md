@@ -1,13 +1,14 @@
 # docminer
 
-Documentation scraper powered by Bun.
-> ⚠️ **Important: Run docminer with the [Bun runtime](https://bun.com/)! Node.js is not supported.**
+Documentation scraper powered by Node.js (Bun also works).
+> Note: Requires Node.js 18+.
 > It takes **1** line to install.
 
 ## Install
 
 ```bash
-bun i -g docminer
+npm i -g docminer
+# or: bun i -g docminer
 ```
 
 ## Usage
@@ -15,7 +16,7 @@ bun i -g docminer
 Default crawl a site (stays within the starting path):
 
 ```bash
-bunx docminer https://bun.com/docs
+docminer https://bun.com/docs
 ```
 Tada!
 
@@ -23,13 +24,13 @@ Tada!
 Scrape a single page:
 
 ```bash
-bun run index.ts url https://bun.com/docs/installation
+docminer url https://bun.com/docs/installation
 ```
 
 Scrape from a list (one URL per line, `#` for comments):
 
 ```bash
-bun run index.ts urls urls.txt --concurrency 4
+docminer urls urls.txt --concurrency 4
 ```
 (You can also do `-c 4`)
 

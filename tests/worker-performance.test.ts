@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { Worker } from "node:worker_threads";
+import { describe, expect, test } from "vitest";
 import { BloomFilter } from "../src/bloom";
 import { DEFAULT_OPTIONS } from "../src/constants";
 import type {
@@ -50,18 +52,15 @@ const benchmarkWorker = async (
   url: string,
   timeoutMs = TEST_TIMEOUT_MS
 ): Promise<WorkerBenchmarkResult> => {
-  const workerPath =
+  const workerUrl =
     workerType === "markdown"
-      ? "./src/workers/markdown-worker.ts"
-      : "./src/workers/hybrid-html-worker.ts";
+      ? new URL("../dist/workers/markdown-worker.js", import.meta.url)
+      : new URL("../dist/workers/hybrid-html-worker.js", import.meta.url);
 
-  const worker =
-    workerType === "markdown"
-      ? new Worker(workerPath, { smol: true })
-      : new Worker(workerPath);
+  const worker = new Worker(workerUrl, { type: "module" });
 
-  const workerId = crypto.randomUUID();
-  const jobId = crypto.randomUUID();
+  const workerId = randomUUID();
+  const jobId = randomUUID();
   const knownUrlFilter = createTestBloomFilter();
 
   return new Promise((resolve) => {
@@ -70,7 +69,7 @@ const benchmarkWorker = async (
 
     const timeout = setTimeout(() => {
       timedOut = true;
-      worker.terminate();
+      void worker.terminate();
       resolve({
         workerType,
         url,
@@ -81,9 +80,7 @@ const benchmarkWorker = async (
       });
     }, timeoutMs);
 
-    worker.addEventListener("message", (event: MessageEvent) => {
-      const message = event.data as WorkerToMainMessage;
-
+    worker.on("message", (message: WorkerToMainMessage) => {
       if (message.type === "ready") {
         // Worker is ready, assign the job
         const job: JobPayload = {
@@ -105,7 +102,7 @@ const benchmarkWorker = async (
         if (!timedOut) {
           clearTimeout(timeout);
           const durationMs = Date.now() - startTime;
-          worker.terminate();
+          void worker.terminate();
           resolve({
             workerType,
             url,
@@ -119,7 +116,7 @@ const benchmarkWorker = async (
         if (!timedOut) {
           clearTimeout(timeout);
           const durationMs = Date.now() - startTime;
-          worker.terminate();
+          void worker.terminate();
           resolve({
             workerType,
             url,
@@ -132,7 +129,7 @@ const benchmarkWorker = async (
       } else if (message.type === "markdownUnavailable" && !timedOut) {
         clearTimeout(timeout);
         const durationMs = Date.now() - startTime;
-        worker.terminate();
+        void worker.terminate();
         resolve({
           workerType,
           url,
@@ -143,10 +140,10 @@ const benchmarkWorker = async (
       }
     });
 
-    worker.addEventListener("error", (event) => {
+    worker.on("error", (event) => {
       if (!timedOut) {
         clearTimeout(timeout);
-        worker.terminate();
+        void worker.terminate();
         resolve({
           workerType,
           url,

@@ -1,6 +1,6 @@
 {
   "name": "docminer",
-  "version": "0.1.5",
+  "version": "1.0.0",
   "description": "Generate markdown docs from URLs via CLI. Good for AI.",
   "license": "MIT",
   "type": "module",
@@ -22,12 +22,12 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/cli.ts ./src/scraper.ts ./src/workers/markdown-worker.ts ./src/workers/hybrid-html-worker.ts --outdir dist --target node --format esm --sourcemap --external playwright --external playwright-core --external chromium-bidi --external electron",
-    "dev": "bun run src/cli.ts",
-    "test": "bun test",
-    "lint": "bun x ultracite check",
-    "format": "bun x ultracite fix",
-    "prepare": "bun run build"
+    "build": "tsup src/cli.ts src/scraper.ts src/workers/markdown-worker.ts src/workers/hybrid-html-worker.ts --format esm --target node18 --sourcemap --out-dir dist --external playwright --external playwright-core --external chromium-bidi --external electron --splitting false",
+    "dev": "node dist/cli.js",
+    "test": "npm run build && vitest run",
+    "lint": "ultracite check",
+    "format": "ultracite fix",
+    "prepare": "npm run build"
   },
   "keywords": [
     "documentation",
@@ -39,12 +39,14 @@
     "ai"
   ],
   "engines": {
-    "bun": ">=3.5.0"
+    "node": ">=18.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.11",
-    "@types/bun": "latest",
-    "ultracite": "7.0.11"
+    "@types/node": "^25.2.1",
+    "tsup": "^8.5.1",
+    "ultracite": "7.0.11",
+    "vitest": "^4.0.18"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"

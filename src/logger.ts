@@ -1,5 +1,5 @@
 /**
- * Centralized logging module with progress bar support using Bun APIs.
+ * Centralized logging module with progress bar support using Node.js APIs.
  *
  * Features:
  * - Consistent colored output for different log levels

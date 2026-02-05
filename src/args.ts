@@ -1,5 +1,6 @@
 import { DEFAULT_OPTIONS } from "./constants";
 import { logger } from "./logger";
+import { packageVersion } from "./package-info";
 import type { CliOptions, FindOptions, LinkCheckOptions } from "./types";
 import { parsePositiveInt } from "./utils";
 
@@ -417,8 +418,7 @@ export function printHelp(): void {
     "",
     "┌───────────────────────────────┐",
     (() => {
-      const version = require("../package.json").version;
-      const label = `Docminer ${version}`;
+      const label = `Docminer ${packageVersion}`;
       const totalWidth = 31;
       const padding = Math.floor((totalWidth - label.length) / 2);
       const padded = `${" ".repeat(padding)}${label}${" ".repeat(totalWidth - label.length - padding)}`;

@@ -16,9 +16,12 @@ import type {
   WorkerOptions,
   WorkerToMainMessage,
 } from "./protocol";
+import { createWorkerMessenger } from "./worker-runtime";
 
-declare let self: Worker;
-
+const { post, onMessage } = createWorkerMessenger<
+  MainToWorkerMessage,
+  WorkerToMainMessage
+>();
 const emptyKnownUrlFilter: KnownUrlLookup = { has: () => false };
 let workerId = "";
 let workerKind: WorkerKind = "hybrid";
@@ -32,10 +35,6 @@ let knownUrlFilter: KnownUrlLookup = emptyKnownUrlFilter;
 
 const FRONTMATTER_REGEX = /^---[\s\S]*?---\s*/;
 const MIN_MARKDOWN_CHARS = 200;
-
-const post = (message: WorkerToMainMessage): void => {
-  postMessage(message);
-};
 
 const clearInactivityTimer = (): void => {
   if (inactivityTimer) {
@@ -294,8 +293,7 @@ const runRender = async (job: JobPayload): Promise<void> => {
   }
 };
 
-self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
-  const message = event.data;
+onMessage((message) => {
   if (!message) {
     return;
   }
@@ -336,4 +334,4 @@ self.onmessage = (event: MessageEvent<MainToWorkerMessage>) => {
   ) {
     runRender(pendingRenderJob);
   }
-};
+});

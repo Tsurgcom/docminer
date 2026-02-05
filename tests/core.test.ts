@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { describe, expect, test } from "vitest";
 import { parseArgs } from "../src/args";
 import { DEFAULT_OPTIONS, turndownService } from "../src/constants";
 import { extractMarkdownContent } from "../src/content";

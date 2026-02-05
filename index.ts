@@ -1,5 +1,6 @@
 import { main } from "./src/cli";
+import { isMainModule } from "./src/runtime";
 
-if (import.meta.main) {
+if (isMainModule(import.meta.url)) {
   main();
 }

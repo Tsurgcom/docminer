@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import {
+  type WorkerOptions as NodeWorkerOptions,
+  Worker,
+} from "node:worker_threads";
 import { BloomFilter, type BloomFilterInit } from "./bloom";
 import { logger } from "./logger";
 import { buildAllowAllPolicy, loadRobotsPolicy } from "./robots";
@@ -11,29 +16,17 @@ import type {
   WorkerToMainMessage,
 } from "./workers/protocol";
 
-const resolveWorkerPath = (workerName: string): string => {
-  // Check if we're running from source (development) or built (production)
-  const currentFile = import.meta.url;
-  const isDevelopment = currentFile.includes("/src/");
+const resolveWorkerUrl = (workerName: string): URL => {
+  const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
+  return new URL(`./workers/${workerName}.${extension}`, import.meta.url);
+};
 
-  if (isDevelopment) {
-    // In development, use TypeScript source files
-    // Bun resolves paths relative to project root
-    return `./src/workers/${workerName}.ts`;
+const buildWorkerOptions = (): NodeWorkerOptions => {
+  const options: NodeWorkerOptions = { type: "module" };
+  if (process.execArgv.length > 0) {
+    options.execArgv = process.execArgv;
   }
-
-  // In production: resolve workers relative to the current file location
-  // This works for both local dist/ and npm installations
-  try {
-    // Use the current file's directory as base
-    const baseDir = new URL(".", currentFile);
-    const workerUrl = new URL(`workers/${workerName}.js`, baseDir);
-    // Return as file path (works in both Bun and Node.js)
-    return workerUrl.pathname;
-  } catch {
-    // Fallback: relative path from dist/
-    return `./dist/workers/${workerName}.js`;
-  }
+  return options;
 };
 
 interface QueueItem {
@@ -107,7 +100,7 @@ const clamp = (value: number, min: number, max: number): number =>
 const updateEwma = (current: number, sample: number, alpha: number): number =>
   Number.isFinite(sample) ? alpha * sample + (1 - alpha) * current : current;
 
-const createJobId = (): string => crypto.randomUUID();
+const createJobId = (): string => randomUUID();
 
 const createWorkerOptions = (options: CliOptions): CliOptions => ({
   ...options,
@@ -236,12 +229,9 @@ const createWorkerPool = (
   const spawnWorker = (kind: WorkerKind): WorkerState => {
     const workerFileName =
       kind === "markdown" ? "markdown-worker" : "hybrid-html-worker";
-    const workerPath = resolveWorkerPath(workerFileName);
-    const worker =
-      kind === "markdown"
-        ? new Worker(workerPath, { smol: true })
-        : new Worker(workerPath);
-    const id = crypto.randomUUID();
+    const workerUrl = resolveWorkerUrl(workerFileName);
+    const worker = new Worker(workerUrl, buildWorkerOptions());
+    const id = randomUUID();
     const state: WorkerState = {
       id,
       kind,
@@ -253,8 +243,7 @@ const createWorkerPool = (
     workers.set(id, state);
     updateWorkerCounts();
 
-    worker.addEventListener("message", (event: MessageEvent) => {
-      const message = event.data as WorkerToMainMessage;
+    worker.on("message", (message: WorkerToMainMessage) => {
       if (!message) {
         return;
       }
@@ -267,26 +256,17 @@ const createWorkerPool = (
       onMessage(state, message);
     });
 
-    worker.addEventListener("close", () => {
+    worker.on("exit", (code) => {
+      if (code !== 0) {
+        logger.warn(`Worker ${state.id} exited with code ${code}`);
+      }
       handleStopped(state.id);
     });
 
-    worker.addEventListener("error", (event: ErrorEvent) => {
-      let errorMessage = "Unknown error";
-
-      if (event.error instanceof Error) {
-        errorMessage = event.error.message;
-      } else if (event.error) {
-        errorMessage = String(event.error);
-      } else if (event.message) {
-        errorMessage = event.message;
-      }
-
-      const errorDetails =
-        event.filename && event.lineno
-          ? ` at ${event.filename}:${event.lineno}:${event.colno ?? 0}`
-          : "";
-      logger.error(`Worker ${state.id} failed: ${errorMessage}${errorDetails}`);
+    worker.on("error", (error) => {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      logger.error(`Worker ${state.id} failed: ${errorMessage}`);
       handleStopped(state.id);
     });
 
